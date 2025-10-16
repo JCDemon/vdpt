@@ -1,0 +1,62 @@
+[
+  {
+    "title": "feat(api): real preview for `segment`",
+    "labels": ["enhancement","task"],
+    "milestone": "M1-MVP",
+    "body": "Acceptance:\n- Given image+points/prompt, preview returns overlay + affected pixel count (no mutation).\n- Unit tests with two sample images and golden stats."
+  },
+  {
+    "title": "feat(api): real preview for `filter` (tabular)",
+    "labels": ["enhancement","task"],
+    "milestone": "M1-MVP",
+    "body": "Acceptance:\n- Preview returns kept_rows/removed_rows and column add/drop summary.\n- Tests using 2 small CSV fixtures."
+  },
+  {
+    "title": "feat(provenance): GET /provenance/snapshot",
+    "labels": ["enhancement","task"],
+    "milestone": "M1-MVP",
+    "body": "Acceptance:\n- Endpoint returns normalized frequency/recency in [0,1].\n- Tests cover empty and non-empty recorder states."
+  },
+  {
+    "title": "infra(ci): add ruff + black pre-commit and CI lint step",
+    "labels": ["infra"],
+    "milestone": "M1-MVP",
+    "body": "Acceptance:\n- .pre-commit-config.yaml with ruff+black; CI fails on lint errors."
+  },
+  {
+    "title": "docs: write architecture.md and roadmap.md",
+    "labels": ["docs"],
+    "milestone": "M1-MVP",
+    "body": "Acceptance:\n- Architecture diagram (mermaid/ASCII) + 12-week roadmap with milestones."
+  },
+  {
+    "title": "research: experiment card template",
+    "labels": ["research","docs"],
+    "milestone": "M2-UX",
+    "body": "Acceptance:\n- docs/experiments/template.md with fields: dataset, ops, preview metrics, criteria, outcome."
+  },
+  {
+    "title": "feat(evaluator): prompt-variant runner + criteria schema",
+    "labels": ["enhancement"],
+    "milestone": "M2-UX",
+    "body": "Acceptance:\n- Run N templates over a small set; export CSV with scores + short rationales."
+  },
+  {
+    "title": "feat(ui): minimal web UI scaffold (vite react-ts)",
+    "labels": ["enhancement","design"],
+    "milestone": "M2-UX",
+    "body": "Acceptance:\n- Panels: Preview, Provenance Lens, Prompt Lab; dummy API calls succeed."
+  },
+  {
+    "title": "study: benchmark tasks and telemetry spec",
+    "labels": ["research"],
+    "milestone": "M3-Study",
+    "body": "Acceptance:\n- Task list for image/table; telemetry spec; ethics/IRB checklist stub."
+  },
+  {
+    "title": "paper: figures (system, previews, provenance maps)",
+    "labels": ["docs","design","research"],
+    "milestone": "M4-Paper",
+    "body": "Acceptance:\n- Figure list + placeholder SVG/PNG + export script."
+  }
+]
