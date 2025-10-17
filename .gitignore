@@ -50,3 +50,6 @@ venv.bak/
 coverage.xml
 htmlcov/
 
+
+# Test assets
+tests/assets/sample.jpg
