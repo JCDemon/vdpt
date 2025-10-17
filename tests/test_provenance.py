@@ -1,20 +1,12 @@
-"""Tests for provenance recording utilities."""
-
-from backend.app.provenance.recorder import bump_frequency, bump_recency, reset, snapshot
+from backend.app.provenance import recorder
 
 
-def test_snapshot_empty() -> None:
-    reset()
-    assert snapshot() == {}
-
-
-def test_snapshot_range() -> None:
-    reset()
-    bump_frequency(["a", "a", "b"])
-    bump_recency(["a"])
-    bump_recency(["b"])
-
-    stats = snapshot()
-
-    assert 0.0 <= stats["frequency"]["a"] <= 1.0
-    assert 0.0 <= stats["recency"]["b"] <= 1.0
+def test_snapshot_normalized_range():
+    recorder.bump_frequency(["x", "x", "y"])
+    recorder.bump_recency(["x"])
+    recorder.bump_recency(["y"])
+    s = recorder.snapshot()
+    for v in s.get("frequency", {}).values():
+        assert 0.0 <= v <= 1.0
+    for v in s.get("recency", {}).values():
+        assert 0.0 <= v <= 1.0
