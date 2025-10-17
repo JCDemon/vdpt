@@ -1,4 +1,4 @@
-"""Domain services for the VDTP API."""
+"""Domain services for the VDPT API."""
 
 from __future__ import annotations
 

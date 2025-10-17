@@ -1,4 +1,4 @@
-"""Main FastAPI application for the VDTP backend."""
+"""Main FastAPI application for the VDPT backend."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def create_app(todo_service: TodoService | None = None) -> FastAPI:
     """Create a configured FastAPI application."""
 
     service = todo_service or TodoService()
-    app = FastAPI(title="VDTP MVP API", version="0.2.0")
+    app = FastAPI(title="VDPT API", version="0.2.0")
 
     app.add_middleware(
         CORSMiddleware,

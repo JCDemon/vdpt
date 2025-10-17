@@ -1,4 +1,4 @@
-"""VDTP backend package."""
+"""VDPT backend package."""
 
 from .app.main import create_app
 

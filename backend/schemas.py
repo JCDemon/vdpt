@@ -1,4 +1,4 @@
-"""Pydantic schemas for the VDTP API."""
+"""Pydantic schemas for the VDPT API."""
 
 from typing import Optional
 
