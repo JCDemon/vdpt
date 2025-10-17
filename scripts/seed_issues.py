@@ -4,7 +4,7 @@
 Seed GitHub issues from a JSON spec.
 Usage:
   export GITHUB_TOKEN=ghp_xxx
-  python scripts/seed_issues.py --repo JCDemon/vdtp --input .github/seed/issues.json --assignee JCDemon
+  python scripts/seed_issues.py --repo JCDemon/vdpt --input .github/seed/issues.json --assignee JCDemon
 """
 from __future__ import annotations
 import argparse, json, os, sys, urllib.request as req, urllib.error as err
@@ -15,7 +15,7 @@ def call(url, method="GET", data=None, token=None):
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "vdtp-seed-script/0.1",
+        "User-Agent": "vdpt-seed-script/0.1",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"

@@ -1,4 +1,4 @@
-"""Basic smoke tests for the VDTP API."""
+"""Basic smoke tests for the VDPT API."""
 
 from backend import create_app
 from fastapi.testclient import TestClient

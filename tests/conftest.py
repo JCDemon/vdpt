@@ -1,4 +1,4 @@
-"""Test configuration for the VDTP project."""
+"""Test configuration for the VDPT project."""
 
 import sys
 from pathlib import Path

@@ -1,4 +1,4 @@
-# VDTP MVP
+# VDPT MVP
 
 This repository hosts a minimal FastAPI application that exposes a todo-focused API together with automated tests and CI configuration.
 

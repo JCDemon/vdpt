@@ -1,4 +1,4 @@
-"""VDTP FastAPI application package."""
+"""VDPT FastAPI application package."""
 
 from .main import create_app, app
 
