@@ -53,3 +53,16 @@ tests/             # Pytest-based automated tests
 
 - The API stores data in memory to keep the MVP lightweight. Persistence can be added later.
 - See [`SANITY.md`](SANITY.md) for manual verification steps.
+
+## VDPT MVP API
+```bash
+# health
+curl -s http://127.0.0.1:8000/health
+
+# preview (stub)
+curl -s -X POST http://127.0.0.1:8000/preview -H "Content-Type: application/json" \
+  -d '{"ops":[{"kind":"filter","params":{"col":"x"}},{"kind":"segment","params":{"points":[[10,20]]}}]}'
+
+# provenance snapshot
+curl -s http://127.0.0.1:8000/provenance/snapshot
+```
