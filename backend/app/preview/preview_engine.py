@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from typing import Iterable, List, Sequence
 
+from ...vdpt.providers import TextLLMProvider
+
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw
@@ -101,7 +103,12 @@ def _preview_filter(params: dict) -> dict:
 
     kept_rows = int(df_filtered.shape[0])
     removed_rows = int(df.shape[0] - df_filtered.shape[0])
-    return {"kept_rows": kept_rows, "removed_rows": removed_rows}
+    column_summary = _summarize_columns(df.columns, df_filtered.columns)
+    return {
+        "kept_rows": kept_rows,
+        "removed_rows": removed_rows,
+        "column_summary": column_summary,
+    }
 
 
 def _load_csv(path: Path) -> pd.DataFrame:
@@ -126,3 +133,64 @@ def _validate_where(where: str, columns: Iterable[str]) -> None:
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
+
+
+def _summarize_columns(
+    original: Iterable[str], filtered: Iterable[str]
+) -> dict[str, list[str]]:
+    """Return a summary of column changes between the original and filtered data."""
+
+    original_set = {str(col) for col in original}
+    filtered_set = {str(col) for col in filtered}
+
+    unchanged = sorted(original_set & filtered_set)
+    removed = sorted(original_set - filtered_set)
+    added = sorted(filtered_set - original_set)
+
+    return {"unchanged": unchanged, "removed": removed, "added": added}
+
+
+def preview_summarize(
+    text: str,
+    params: dict,
+    provider: TextLLMProvider,
+) -> str:
+    """Generate a lightweight summary for preview responses."""
+
+    instructions = params.get("instructions") or "Summarize the following text."
+    max_tokens = int(params.get("max_tokens", 128))
+    prompt = (
+        f"{instructions.strip()}\n\n"
+        "Text:\n"
+        f"{text.strip()}\n"
+        "Summary:"
+    )
+    try:
+        return provider.generate(prompt, max_tokens=max_tokens).strip()
+    except Exception as exc:  # pragma: no cover - provider errors
+        raise RuntimeError(f"Failed to summarize text: {exc}") from exc
+
+
+def preview_classify(
+    text: str,
+    labels: Sequence[str],
+    params: dict,
+    provider: TextLLMProvider,
+) -> str:
+    """Classify text into one of the provided labels for preview output."""
+
+    if not labels:
+        raise ValueError("classify operation requires at least one label")
+    label_list = ", ".join(labels)
+    instructions = params.get("instructions") or "Classify the text into one label."
+    max_tokens = int(params.get("max_tokens", 16))
+    prompt = (
+        f"{instructions.strip()}\n\n"
+        f"Possible labels: {label_list}\n"
+        f"Text: {text.strip()}\n"
+        "Label:"
+    )
+    try:
+        return provider.generate(prompt, max_tokens=max_tokens).strip()
+    except Exception as exc:  # pragma: no cover - provider errors
+        raise RuntimeError(f"Failed to classify text: {exc}") from exc

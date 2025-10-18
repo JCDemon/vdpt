@@ -50,6 +50,9 @@ venv.bak/
 coverage.xml
 htmlcov/
 
+# Execution artifacts
+artifacts/
+
 
 # Test assets
 tests/assets/sample.jpg

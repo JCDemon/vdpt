@@ -40,6 +40,41 @@ Execute the test suite with:
 pytest
 ```
 
+
+## Text model provider (Qwen/Mock)
+
+```bash
+export DASHSCOPE_API_KEY="***"
+```
+
+If the variable is not set, the app automatically falls back to the deterministic `MockProvider` for offline demos.
+
+## Run the UI
+
+```bash
+python -m pip install -r ui/requirements.txt
+streamlit run ui/streamlit_app.py
+```
+
+## One-minute demo
+
+```bash
+export DASHSCOPE_API_KEY="..."
+python -m uvicorn backend.app.main:app --reload --port 8000
+streamlit run ui/streamlit_app.py
+```
+
+With the backend and Streamlit UI running:
+
+1. Upload `data/sample_news.csv` (or use the bundled sample in the sidebar).
+2. Click **Load sample plan** to pull in `samples/plan_news_summarize.json`.
+3. Hit **Preview** to generate summarizations for the sampled rows.
+4. Hit **Execute** to process the full dataset and note the artifact directory path that appears.
+
+## Troubleshooting
+
+- If `DASHSCOPE_API_KEY` is unset, the app automatically falls back to the deterministic `MockProvider`.
+
 ## Project layout
 
 ```

@@ -1,0 +1,1 @@
+{"ops":[{"kind":"summarize","params":{"field":"text","instructions":"用一句中文总结要点","max_tokens":80}}]}

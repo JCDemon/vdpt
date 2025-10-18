@@ -20,3 +20,6 @@ def test_preview_filter_counts_rows():
 
     assert result["kept_rows"] + result["removed_rows"] == total_rows
     assert result["kept_rows"] > 0
+    assert result["column_summary"]["unchanged"] == ["a", "b"]
+    assert result["column_summary"]["removed"] == []
+    assert result["column_summary"]["added"] == []
