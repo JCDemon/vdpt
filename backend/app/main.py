@@ -15,7 +15,7 @@ from ..services import TodoService
 from .preview.preview_engine import (
     preview_classify,
     preview_operation,
-    preview_summarize,
+    run_operation,
 )
 from .provenance.recorder import bump_frequency, bump_recency, snapshot
 
@@ -124,9 +124,10 @@ def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    processed_df, _ = _apply_tabular_ops(df.copy(), plan.ops, provider)
-
     artifacts_dir = _create_artifact_dir()
+    processed_df, _ = _apply_tabular_ops(
+        df.copy(), plan.ops, provider, out_dir=artifacts_dir
+    )
     output_path = artifacts_dir / "output.csv"
     write_csv(processed_df, output_path)
 
@@ -159,7 +160,10 @@ def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
 
 
 def _apply_tabular_ops(
-    df: pd.DataFrame, ops: Sequence[Operation], provider: TextLLMProvider
+    df: pd.DataFrame,
+    ops: Sequence[Operation],
+    provider: TextLLMProvider,
+    out_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, Any]]]:
     working = df.copy()
     new_columns: List[Dict[str, Any]] = []
@@ -185,21 +189,32 @@ def _apply_tabular_ops(
                     detail=f"summarize field '{field}' not found in dataset",
                 )
 
-            output_col = params.get("output_field") or f"{field}_summary"
+            existing_columns = set(working.columns)
+            results: List[Dict[str, Any]] = []
+            indices: List[Any] = []
+            new_column_names: set[str] = set()
 
-            def summarize_value(value: Any) -> str:
-                text = "" if pd.isna(value) else str(value)
+            for idx, row in working.iterrows():
+                row_dict = row.to_dict()
                 try:
-                    return preview_summarize(text, params, provider)
-                except RuntimeError as exc:
+                    result = run_operation(row_dict, op.kind, params, out_dir=out_dir)
+                except Exception as exc:
                     raise HTTPException(status_code=500, detail=str(exc)) from exc
+                results.append(result)
+                indices.append(idx)
+                new_column_names.update(result.keys())
 
-            working[output_col] = working[field].apply(summarize_value)
-            new_columns.append({
-                "name": output_col,
-                "operation": "summarize",
-                "source": field,
-            })
+            for column in sorted(new_column_names):
+                if column not in working.columns:
+                    working.loc[:, column] = pd.NA
+                values = [result.get(column) for result in results]
+                working.loc[indices, column] = values
+                if column not in existing_columns:
+                    new_columns.append({
+                        "name": column,
+                        "operation": "summarize",
+                        "source": field,
+                    })
             provenance_keys.update({f"op:{op.kind}", f"field:{field}"})
         elif op.kind == "classify":
             field = params.get("field")
