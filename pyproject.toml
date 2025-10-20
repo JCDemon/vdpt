@@ -1,0 +1,16 @@
+[tool.ruff]
+line-length = 100
+extend-exclude = ["artifacts", "data", "dist", "node_modules", ".venv", "frontend/artifacts"]
+
+[tool.black]
+line-length = 100
+exclude = '''
+/(
+  artifacts
+| data
+| dist
+| node_modules
+| \.venv
+| frontend/artifacts
+)/
+'''
