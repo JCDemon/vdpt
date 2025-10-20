@@ -28,8 +28,8 @@ jobs:
       - name: Lint
         run: |
           python -m pip install ruff black
-          ruff backend
-          black --check backend
+          ruff check . --output-format=github
+          black --check .
 
       - name: Run tests
-        run: pytest
+        run: pytest -q
