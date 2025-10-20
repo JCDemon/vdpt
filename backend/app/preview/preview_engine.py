@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 from ...vdpt.providers import TextLLMProvider
 
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw
+
+from ..ops.registry import get_handler
+# Ensure operation handlers register themselves on import.
+from ..ops.text import summarize as _text_summarize  # noqa: F401
 
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "tests" / "assets"
@@ -19,6 +23,20 @@ _DEFAULT_CSV = _ASSETS_DIR / "sample.csv"
 _POINT_RADIUS = 8
 _ALLOWED_QUERY_CHARS = re.compile(r"^[\w\s><=.!&|()'\"+-/*]+$")
 _ALLOWED_KEYWORDS = {"and", "or", "not", "True", "False"}
+
+
+def run_operation(
+    row: Dict[str, Any],
+    op_kind: str,
+    op_params: Dict[str, Any],
+    out_dir: Path | None = None,
+) -> Dict[str, Any]:
+    """Dispatch an operation via the registry to preview or execute it."""
+
+    handler = get_handler(op_kind)
+    if out_dir is None:
+        return handler.preview(row, op_params)
+    return handler.execute(row, op_params, out_dir)
 
 
 def preview_operation(op: dict):
