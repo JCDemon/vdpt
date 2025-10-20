@@ -13,6 +13,7 @@ import pandas as pd
 from PIL import Image, ImageDraw
 
 from ..ops.registry import get_handler
+
 # Ensure operation handlers register themselves on import.
 from ..ops.text import summarize as _text_summarize  # noqa: F401
 
@@ -94,7 +95,9 @@ def _draw_box(draw: ImageDraw.ImageDraw, box: Sequence[float], width: int, heigh
     draw.rectangle([x1, y1, x2, y2], fill=255)
 
 
-def _draw_points(draw: ImageDraw.ImageDraw, points: Iterable[Sequence[float]], width: int, height: int) -> None:
+def _draw_points(
+    draw: ImageDraw.ImageDraw, points: Iterable[Sequence[float]], width: int, height: int
+) -> None:
     for point in points or []:
         if len(point) != 2:
             continue
@@ -153,9 +156,7 @@ def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
 
-def _summarize_columns(
-    original: Iterable[str], filtered: Iterable[str]
-) -> dict[str, list[str]]:
+def _summarize_columns(original: Iterable[str], filtered: Iterable[str]) -> dict[str, list[str]]:
     """Return a summary of column changes between the original and filtered data."""
 
     original_set = {str(col) for col in original}
@@ -177,12 +178,7 @@ def preview_summarize(
 
     instructions = params.get("instructions") or "Summarize the following text."
     max_tokens = int(params.get("max_tokens", 128))
-    prompt = (
-        f"{instructions.strip()}\n\n"
-        "Text:\n"
-        f"{text.strip()}\n"
-        "Summary:"
-    )
+    prompt = f"{instructions.strip()}\n\n" "Text:\n" f"{text.strip()}\n" "Summary:"
     try:
         return provider.generate(prompt, max_tokens=max_tokens).strip()
     except Exception as exc:  # pragma: no cover - provider errors

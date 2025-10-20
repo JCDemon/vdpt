@@ -11,6 +11,7 @@ Example usage::
 
 Use ``--dry-run`` to preview the operations without calling the GitHub API.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -167,8 +168,13 @@ def main() -> None:
     if not args.dry_run and not args.token:
         raise SystemExit("A GitHub token is required unless --dry-run is specified.")
 
-    label_urls = [ensure_label(args.repo, label, args.token, args.dry_run) for label in DEFAULT_LABELS]
-    milestone_urls = [ensure_milestone(args.repo, milestone, args.token, args.dry_run) for milestone in DEFAULT_MILESTONES]
+    label_urls = [
+        ensure_label(args.repo, label, args.token, args.dry_run) for label in DEFAULT_LABELS
+    ]
+    milestone_urls = [
+        ensure_milestone(args.repo, milestone, args.token, args.dry_run)
+        for milestone in DEFAULT_MILESTONES
+    ]
 
     print("Labels:")
     for url in label_urls:
