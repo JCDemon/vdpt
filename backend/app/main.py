@@ -1,8 +1,9 @@
 import json
 import os
+import random
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Annotated, Any, Dict, List, Literal, Optional, Sequence, Union, cast
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -37,22 +38,50 @@ def get_service() -> TodoService:
 
 
 class Operation(BaseModel):
-    kind: Literal["segment", "embed", "filter", "map", "summarize", "classify", "transform"]
+    kind: Literal[
+        "segment",
+        "embed",
+        "filter",
+        "map",
+        "summarize",
+        "classify",
+        "transform",
+        "img_resize",
+        "img_caption",
+    ]
     params: Dict[str, Any] = Field(default_factory=dict)
     summarize: Optional[Dict[str, Any]] = None
     classify: Optional[Dict[str, Any]] = None
 
 
-class Plan(BaseModel):
-    class Dataset(BaseModel):
-        type: Literal["csv"]
-        path: str
-        sample_size: Optional[int] = Field(default=5, ge=1)
-        random_sample: bool = False
-        random_seed: Optional[int] = None
+class CsvDataset(BaseModel):
+    type: Literal["csv"]
+    path: str
+    sample_size: Optional[int] = Field(default=5, ge=1)
+    random_sample: bool = False
+    random_seed: Optional[int] = None
 
+
+class ImageDataset(BaseModel):
+    type: Literal["images"]
+    session: str
+    paths: List[str] = Field(default_factory=list)
+    sample_size: Optional[int] = Field(default=2, ge=1)
+    random_sample: bool = False
+    random_seed: Optional[int] = None
+
+
+DatasetType = Annotated[Union[CsvDataset, ImageDataset], Field(discriminator="type")]
+
+
+class Plan(BaseModel):
     ops: List[Operation] = Field(default_factory=list)
-    dataset: Optional[Dataset] = None
+    dataset: Optional[DatasetType] = None
+
+
+# Backwards compatibility for existing callers instantiating Plan.Dataset
+Plan.Dataset = CsvDataset  # type: ignore[attr-defined]
+Plan.ImageDataset = ImageDataset  # type: ignore[attr-defined]
 
 
 def health() -> Dict[str, bool]:
@@ -64,8 +93,11 @@ def provenance_snapshot() -> Dict[str, Any]:
 
 
 def preview(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) -> Dict[str, Any]:
-    if plan.dataset and plan.dataset.type == "csv":
+    dataset = plan.dataset
+    if isinstance(dataset, CsvDataset):
         return _preview_csv(plan, provider)
+    if isinstance(dataset, ImageDataset):
+        return _preview_images(plan, provider)
 
     details: Dict[str, Any] = {}
     for i, op in enumerate(plan.ops):
@@ -77,8 +109,11 @@ def preview(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) 
 
 
 def execute(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) -> Dict[str, Any]:
-    if plan.dataset and plan.dataset.type == "csv":
+    dataset = plan.dataset
+    if isinstance(dataset, CsvDataset):
         return _execute_csv(plan, provider)
+    if isinstance(dataset, ImageDataset):
+        return _execute_images(plan, provider)
 
     keys = [op.kind for op in plan.ops]
     bump_frequency(keys)
@@ -87,7 +122,7 @@ def execute(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) 
 
 
 def _preview_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
-    dataset = plan.dataset
+    dataset = cast(CsvDataset, plan.dataset)
     assert dataset is not None  # for type-checkers
 
     try:
@@ -110,7 +145,7 @@ def _preview_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
 
 
 def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
-    dataset = plan.dataset
+    dataset = cast(CsvDataset, plan.dataset)
     assert dataset is not None
 
     csv_path = Path(dataset.path)
@@ -154,6 +189,195 @@ def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
     }
 
 
+def _preview_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
+    dataset = cast(ImageDataset, plan.dataset)
+    assert dataset is not None
+
+    image_paths = _resolve_image_paths(dataset)
+    sample_paths = _sample_image_paths(image_paths, dataset)
+    preview_dir = _create_preview_tmp_dir()
+
+    records: List[Dict[str, Any]] = []
+    new_columns: Dict[str, Dict[str, Any]] = {}
+    provenance_keys: set[str] = set()
+
+    for index, path in enumerate(sample_paths):
+        row_context: Dict[str, Any] = {
+            "image_path": str(path),
+            "__tmp_dir__": str(preview_dir),
+            "__index__": index,
+        }
+        record: Dict[str, Any] = {"image_path": str(path)}
+
+        for op in plan.ops:
+            params = _operation_params(op)
+            try:
+                result = run_operation(row_context, op.kind, params)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            record.update(result)
+            for column in result:
+                new_columns.setdefault(column, {"name": column, "operation": op.kind})
+            provenance_keys.add(f"op:{op.kind}")
+
+        records.append(record)
+
+    if provenance_keys:
+        keys = sorted(provenance_keys)
+        bump_frequency(keys)
+        bump_recency(keys)
+
+    new_column_list = [new_columns[name] for name in sorted(new_columns)]
+
+    return {
+        "records": records,
+        "schema": {"new_columns": new_column_list},
+        "preview_sample_size": len(records),
+        "summary": f"preview generated for {len(records)} image(s)",
+    }
+
+
+def _execute_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
+    dataset = cast(ImageDataset, plan.dataset)
+    assert dataset is not None
+
+    image_paths = _resolve_image_paths(dataset)
+    artifacts_dir = _create_artifact_dir()
+
+    records: List[Dict[str, Any]] = []
+    provenance_keys: set[str] = set()
+    generated_files: set[str] = set()
+
+    for index, path in enumerate(image_paths):
+        row_context: Dict[str, Any] = {
+            "image_path": str(path),
+            "__index__": index,
+        }
+        record: Dict[str, Any] = {"image_path": str(path)}
+
+        for op in plan.ops:
+            params = _operation_params(op)
+            try:
+                result = run_operation(row_context, op.kind, params, out_dir=artifacts_dir)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            record.update(result)
+            for value in result.values():
+                if isinstance(value, str):
+                    value_path = Path(value)
+                    if value_path.exists() and str(value_path).startswith(str(artifacts_dir)):
+                        generated_files.add(str(value_path))
+            provenance_keys.add(f"op:{op.kind}")
+
+        records.append(record)
+
+    if provenance_keys:
+        keys = sorted(provenance_keys)
+        bump_frequency(keys)
+        bump_recency(keys)
+
+    if records:
+        output_df = pd.DataFrame(records)
+    else:
+        output_df = pd.DataFrame(columns=["image_path"])
+
+    output_path = artifacts_dir / "output.csv"
+    output_df.to_csv(output_path, index=False)
+
+    preview_payload = _preview_images(plan, provider)
+    preview_path = artifacts_dir / "preview.json"
+    preview_path.write_text(json.dumps(preview_payload, indent=2))
+
+    metadata_path = artifacts_dir / "metadata.json"
+    metadata = {
+        "plan": plan.model_dump(),
+        "artifacts": {
+            "output_csv": str(output_path),
+            "preview_json": str(preview_path),
+            "generated": sorted(generated_files),
+        },
+        "preview_sample_size": preview_payload.get("preview_sample_size"),
+        "source_images": [str(path) for path in image_paths],
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+
+    artifacts_payload: Dict[str, Any] = {
+        "output_csv": str(output_path),
+        "metadata": str(metadata_path),
+        "preview": str(preview_path),
+    }
+    if generated_files:
+        artifacts_payload["generated"] = sorted(generated_files)
+
+    return {
+        "ok": True,
+        "applied": len(plan.ops),
+        "artifacts": artifacts_payload,
+    }
+
+
+def _operation_params(op: Operation) -> Dict[str, Any]:
+    params: Dict[str, Any] = dict(op.params)
+    if op.summarize:
+        params.update(op.summarize)
+    if op.classify:
+        params.update(op.classify)
+    return params
+
+
+def _resolve_image_paths(dataset: ImageDataset) -> List[Path]:
+    base_dir = Path("artifacts") / "uploads" / dataset.session
+    candidates: List[Path] = []
+
+    if dataset.paths:
+        for raw in dataset.paths:
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                candidate = base_dir / candidate
+            candidates.append(candidate)
+    else:
+        if not base_dir.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=f"uploads session '{dataset.session}' not found",
+            )
+        candidates.extend(sorted(p for p in base_dir.iterdir() if p.is_file()))
+
+    resolved: List[Path] = []
+    for candidate in candidates:
+        if not candidate.exists():
+            raise HTTPException(status_code=500, detail=f"image not found at {candidate}")
+        resolved.append(candidate)
+
+    return resolved
+
+
+def _sample_image_paths(paths: Sequence[Path], dataset: ImageDataset) -> List[Path]:
+    all_paths = list(paths)
+    if not all_paths:
+        return []
+
+    sample_size = dataset.sample_size or len(all_paths)
+    sample_size = min(sample_size, len(all_paths))
+    if sample_size <= 0:
+        return []
+
+    if dataset.random_sample:
+        rng = random.Random(dataset.random_seed)
+        return rng.sample(all_paths, sample_size)
+
+    return all_paths[:sample_size]
+
+
+def _create_preview_tmp_dir() -> Path:
+    timestamp = datetime.now(UTC).strftime("preview-%Y%m%d-%H%M%S-%f")
+    base_dir = Path("artifacts") / "tmp"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = base_dir / timestamp
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_dir
+
+
 def _apply_tabular_ops(
     df: pd.DataFrame,
     ops: Sequence[Operation],
@@ -165,11 +389,7 @@ def _apply_tabular_ops(
     provenance_keys: set[str] = set()
 
     for op in ops:
-        params: Dict[str, Any] = dict(op.params)
-        if op.summarize:
-            params.update(op.summarize)
-        if op.classify:
-            params.update(op.classify)
+        params = _operation_params(op)
 
         if op.kind == "summarize":
             field = params.get("field")
@@ -260,7 +480,7 @@ def _apply_tabular_ops(
     return working, new_columns
 
 
-def _sample_dataframe(df: pd.DataFrame, dataset: Plan.Dataset) -> pd.DataFrame:
+def _sample_dataframe(df: pd.DataFrame, dataset: CsvDataset) -> pd.DataFrame:
     sample_size = dataset.sample_size or len(df)
     sample_size = min(sample_size, len(df)) if len(df) else 0
     if sample_size == 0:

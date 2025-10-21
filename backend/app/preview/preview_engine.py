@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 from ..ops.registry import get_handler
 
 # Ensure operation handlers register themselves on import.
+from ..ops import image_ops as _image_ops  # noqa: F401
 from ..ops.text import summarize as _text_summarize  # noqa: F401
 
 
