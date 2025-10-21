@@ -20,14 +20,14 @@ class ImageResizeHandler(OperationHandler):
 
     def preview(self, row: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         src_path = self._get_source(row)
-        width, height, keep_aspect = self._parse_params(params)
+        width, height, keep_ratio = self._parse_params(params)
 
         tmp_dir = Path(row.get("__tmp_dir__", Path("artifacts") / "tmp"))
         dest_dir = tmp_dir / self.kind
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         dest_path = dest_dir / self._output_name(src_path, width, height)
-        self._resize_image(src_path, width, height, keep_aspect).save(dest_path)
+        self._resize_image(src_path, width, height, keep_ratio).save(dest_path)
         return {"resized_path": str(dest_path)}
 
     def execute(self, row: Dict[str, Any], params: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
@@ -35,30 +35,38 @@ class ImageResizeHandler(OperationHandler):
             raise ValueError("img_resize execute requires an output directory")
 
         src_path = self._get_source(row)
-        width, height, keep_aspect = self._parse_params(params)
+        width, height, keep_ratio = self._parse_params(params)
 
         dest_dir = out_dir / self.kind
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         dest_path = dest_dir / self._output_name(src_path, width, height)
-        self._resize_image(src_path, width, height, keep_aspect).save(dest_path)
+        self._resize_image(src_path, width, height, keep_ratio).save(dest_path)
         return {"resized_path": str(dest_path)}
 
     @staticmethod
     def _parse_params(params: Dict[str, Any]) -> tuple[int, int, bool]:
         try:
             width = int(params["width"])
-            height = int(params["height"])
         except KeyError as exc:  # pragma: no cover - defensive
-            raise ValueError("img_resize requires 'width' and 'height'") from exc
+            raise ValueError("img_resize requires 'width'") from exc
         except (TypeError, ValueError) as exc:
-            raise ValueError("img_resize width/height must be integers") from exc
+            raise ValueError("img_resize width must be an integer") from exc
+
+        height_raw = params.get("height")
+        if height_raw is None:
+            height = width
+        else:
+            try:
+                height = int(height_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("img_resize height must be an integer") from exc
 
         if width <= 0 or height <= 0:
             raise ValueError("img_resize width/height must be positive")
 
-        keep_aspect = bool(params.get("keep_aspect", False))
-        return width, height, keep_aspect
+        keep_ratio = bool(params.get("keep_ratio", params.get("keep_aspect", False)))
+        return width, height, keep_ratio
 
     @staticmethod
     def _output_name(src_path: Path, width: int, height: int) -> str:
@@ -100,8 +108,13 @@ class ImageCaptionHandler(OperationHandler):
         if not value:
             raise ValueError("img_caption requires 'image_path' in the row")
 
-        prompt_raw = params.get("prompt") if params else None
-        prompt = str(prompt_raw) if prompt_raw is not None else None
+        prompt_value = None
+        if params:
+            if params.get("instructions") is not None:
+                prompt_value = params.get("instructions")
+            elif params.get("prompt") is not None:
+                prompt_value = params.get("prompt")
+        prompt = str(prompt_value) if prompt_value is not None else None
 
         max_tokens_raw = params.get("max_tokens") if params else None
         if max_tokens_raw is not None:

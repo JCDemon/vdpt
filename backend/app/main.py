@@ -7,7 +7,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Sequence, Unio
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..schemas import TodoCreate, TodoRead
 from ..vdpt.io import read_csv, sha256_bytes, write_csv
@@ -61,14 +61,33 @@ class CsvDataset(BaseModel):
     random_sample: bool = False
     random_seed: Optional[int] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_kind(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            kind = values.pop("kind", None)
+            if kind and "type" not in values:
+                values["type"] = kind
+        return values
+
 
 class ImageDataset(BaseModel):
     type: Literal["images"]
-    session: str
+    session: Optional[str] = None
+    path: Optional[str] = None
     paths: List[str] = Field(default_factory=list)
-    sample_size: Optional[int] = Field(default=2, ge=1)
+    sample_size: Optional[int] = Field(default=None, ge=1)
     random_sample: bool = False
     random_seed: Optional[int] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_kind(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            kind = values.pop("kind", None)
+            if kind and "type" not in values:
+                values["type"] = kind
+        return values
 
 
 DatasetType = Annotated[Union[CsvDataset, ImageDataset], Field(discriminator="type")]
@@ -326,20 +345,50 @@ def _operation_params(op: Operation) -> Dict[str, Any]:
 
 
 def _resolve_image_paths(dataset: ImageDataset) -> List[Path]:
-    base_dir = Path("artifacts") / "uploads" / dataset.session
+    base_dir: Optional[Path] = None
+
+    if dataset.path:
+        base_dir = Path(dataset.path).expanduser()
+        if not base_dir.is_absolute():
+            base_dir = (Path.cwd() / base_dir).resolve()
+        else:
+            base_dir = base_dir.resolve()
+        if not base_dir.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=f"images directory not found at {base_dir}",
+            )
+    elif dataset.session:
+        base_dir = Path("artifacts") / "uploads" / dataset.session
+        if not base_dir.exists() and not dataset.paths:
+            raise HTTPException(
+                status_code=500,
+                detail=f"uploads session '{dataset.session}' not found",
+            )
+
     candidates: List[Path] = []
 
     if dataset.paths:
         for raw in dataset.paths:
             candidate = Path(raw)
             if not candidate.is_absolute():
+                if base_dir is None:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="relative image paths require a dataset 'path' or 'session'",
+                    )
                 candidate = base_dir / candidate
             candidates.append(candidate)
     else:
+        if base_dir is None:
+            raise HTTPException(
+                status_code=500,
+                detail="images dataset requires 'path' or 'session'",
+            )
         if not base_dir.exists():
             raise HTTPException(
                 status_code=500,
-                detail=f"uploads session '{dataset.session}' not found",
+                detail=f"images directory not found at {base_dir}",
             )
         candidates.extend(sorted(p for p in base_dir.iterdir() if p.is_file()))
 

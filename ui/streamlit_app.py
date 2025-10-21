@@ -79,9 +79,11 @@ def _load_sample_plan() -> Optional[Dict[str, Any]]:
             ops.append(
                 {
                     "kind": "summarize",
-                    "field": params.get("field", ""),
-                    "instructions": params.get("instructions", ""),
-                    "max_tokens": int(params.get("max_tokens", 128) or 128),
+                    "params": {
+                        "field": params.get("field", ""),
+                        "instructions": params.get("instructions", ""),
+                        "max_tokens": int(params.get("max_tokens", 128) or 128),
+                    },
                 }
             )
         elif kind == "classify":
@@ -92,8 +94,10 @@ def _load_sample_plan() -> Optional[Dict[str, Any]]:
             ops.append(
                 {
                     "kind": "classify",
-                    "field": params.get("field", ""),
-                    "labels": [str(label) for label in labels],
+                    "params": {
+                        "field": params.get("field", ""),
+                        "labels": [str(label) for label in labels],
+                    },
                 }
             )
     dataset = payload.get("dataset") or {}
@@ -219,57 +223,182 @@ def _read_columns(path: str) -> List[str]:
     return [str(col) for col in df.columns]
 
 
+def _default_params_for_kind(kind: str, columns: List[str]) -> Dict[str, Any]:
+    if kind == "summarize":
+        return {
+            "field": columns[0] if columns else "",
+            "instructions": "",
+            "max_tokens": 128,
+        }
+    if kind == "classify":
+        return {
+            "field": columns[0] if columns else "",
+            "labels": list(DEFAULT_LABEL_OPTIONS),
+        }
+    if kind == "img_caption":
+        return {"instructions": "", "max_tokens": 80}
+    if kind == "img_resize":
+        return {"width": 512, "height": 512, "keep_ratio": True}
+    return {}
+
+
+def _ensure_operation_params(
+    op: Dict[str, Any], kind: str, columns: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    params = op.get("params")
+    if not isinstance(params, dict):
+        params = {}
+
+    legacy_keys = [
+        "field",
+        "instructions",
+        "max_tokens",
+        "labels",
+        "prompt",
+        "width",
+        "height",
+        "keep_aspect",
+        "keep_ratio",
+    ]
+    for key in legacy_keys:
+        if key in op and key not in params:
+            params[key] = op[key]
+        op.pop(key, None)
+
+    if kind in {"summarize", "classify"}:
+        params.setdefault("field", "")
+        params["field"] = str(params.get("field", ""))
+    if kind == "summarize":
+        params["instructions"] = str(params.get("instructions", ""))
+        try:
+            params["max_tokens"] = int(params.get("max_tokens", 128) or 128)
+        except (TypeError, ValueError):
+            params["max_tokens"] = 128
+    elif kind == "classify":
+        labels = params.get("labels")
+        if isinstance(labels, list):
+            params["labels"] = [str(label) for label in labels]
+        elif labels is None:
+            params["labels"] = list(DEFAULT_LABEL_OPTIONS)
+        else:
+            params["labels"] = [str(labels)]
+    elif kind == "img_caption":
+        prompt_value = params.pop("prompt", None)
+        if prompt_value is not None and not params.get("instructions"):
+            params["instructions"] = str(prompt_value)
+        params["instructions"] = str(params.get("instructions", ""))
+        try:
+            params["max_tokens"] = int(params.get("max_tokens", 80) or 80)
+        except (TypeError, ValueError):
+            params["max_tokens"] = 80
+    elif kind == "img_resize":
+        if "keep_aspect" in params and "keep_ratio" not in params:
+            params["keep_ratio"] = bool(params.pop("keep_aspect"))
+        params["keep_ratio"] = bool(params.get("keep_ratio", True))
+        for key in ("width", "height"):
+            try:
+                value = int(params.get(key, 512) or 512)
+            except (TypeError, ValueError):
+                value = 512
+            if value <= 0:
+                value = 512
+            params[key] = value
+
+    if columns and kind in {"summarize", "classify"}:
+        if params.get("field") not in columns and columns:
+            params["field"] = columns[0]
+
+    op["params"] = params
+    return params
+
+
 def _prepare_plan_payload(
-    ops: List[Dict[str, Any]], dataset: Optional[Dict[str, Any]]
+    ops: List[Dict[str, Any]],
+    dataset: Optional[Dict[str, Any]],
+    *,
+    preview: bool = False,
 ) -> Dict[str, Any]:
     plan_ops: List[Dict[str, Any]] = []
     for op in ops:
         kind = op.get("kind")
+        params = op.get("params") if isinstance(op.get("params"), dict) else {}
+        if not kind:
+            continue
+        sanitized: Dict[str, Any]
         if kind == "summarize":
-            plan_ops.append(
-                {
-                    "kind": "summarize",
-                    "params": {},
-                    "summarize": {
-                        "field": op.get("field"),
-                        "instructions": op.get("instructions", ""),
-                        "max_tokens": int(op.get("max_tokens") or 128),
-                    },
-                }
-            )
+            field_value = params.get("field", op.get("field", ""))
+            instructions_value = params.get("instructions", op.get("instructions", ""))
+            max_tokens_raw = params.get("max_tokens", op.get("max_tokens", 128))
+            try:
+                max_tokens_value = int(max_tokens_raw or 128)
+            except (TypeError, ValueError):
+                max_tokens_value = 128
+            sanitized = {
+                "field": str(field_value or ""),
+                "instructions": str(instructions_value or ""),
+                "max_tokens": max_tokens_value,
+            }
         elif kind == "classify":
-            plan_ops.append(
-                {
-                    "kind": "classify",
-                    "params": {},
-                    "classify": {
-                        "field": op.get("field"),
-                        "labels": [str(label) for label in op.get("labels", [])],
-                    },
-                }
-            )
+            labels = params.get("labels") or op.get("labels") or []
+            if not isinstance(labels, list):
+                labels = [str(labels)]
+            sanitized = {
+                "field": str(params.get("field", op.get("field", "")) or ""),
+                "labels": [str(label) for label in labels],
+            }
         elif kind == "img_caption":
-            params: Dict[str, Any] = {}
-            prompt = op.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                params["prompt"] = prompt
-            plan_ops.append({"kind": "img_caption", "params": params})
+            try:
+                max_tokens = int(params.get("max_tokens", op.get("max_tokens", 80)) or 80)
+            except (TypeError, ValueError):
+                max_tokens = 80
+            instructions_value = params.get(
+                "instructions",
+                op.get("instructions", op.get("prompt", "")),
+            )
+            sanitized = {
+                "instructions": str(instructions_value or ""),
+                "max_tokens": max_tokens,
+            }
         elif kind == "img_resize":
-            params = {}
+            width_source = params.get("width", op.get("width", 512))
             try:
-                params["width"] = int(op.get("width"))
+                width = int(width_source or 512)
             except (TypeError, ValueError):
-                pass
+                width = 512
+            height_source = params.get("height", op.get("height", width))
             try:
-                params["height"] = int(op.get("height"))
+                height = int(height_source or width)
             except (TypeError, ValueError):
-                pass
-            if "keep_aspect" in op:
-                params["keep_aspect"] = bool(op.get("keep_aspect"))
-            plan_ops.append({"kind": "img_resize", "params": params})
+                height = width
+            sanitized = {
+                "width": max(width, 1),
+                "height": max(height, 1),
+                "keep_ratio": bool(
+                    params.get("keep_ratio", op.get("keep_ratio", True))
+                    or params.get("keep_aspect", op.get("keep_aspect", False))
+                ),
+            }
+        else:
+            sanitized = dict(params)
+        plan_ops.append({"kind": kind, "params": sanitized})
+
     plan: Dict[str, Any] = {"ops": plan_ops}
     if dataset:
-        plan["dataset"] = dataset
+        dataset_payload = dict(dataset)
+        if dataset_payload.get("kind") == "images":
+            paths_raw = dataset_payload.get("paths")
+            if isinstance(paths_raw, list):
+                paths_list = list(paths_raw)
+                if preview:
+                    limit = dataset_payload.get("sample_size")
+                    if isinstance(limit, int):
+                        if limit <= 0:
+                            paths_list = []
+                        else:
+                            paths_list = paths_list[: min(limit, len(paths_list))]
+                dataset_payload["paths"] = paths_list
+            dataset_payload.pop("sample_size", None)
+        plan["dataset"] = dataset_payload
     return plan
 
 
@@ -418,7 +547,7 @@ else:
     else:
         st.sidebar.info("Upload PNG or JPG files to begin.")
 
-dataset_payload: Optional[Dict[str, Any]] = None
+dataset_config: Optional[Dict[str, Any]] = None
 
 main_col, provenance_col = st.columns([3, 1.2])
 
@@ -469,21 +598,21 @@ with main_col:
     )
 
     if dataset_kind == "csv" and current_dataset_path:
-        dataset_payload = {
-            "type": "csv",
+        dataset_config = {
+            "kind": "csv",
             "path": current_dataset_path,
             "sample_size": st.session_state.sample_size,
         }
     elif dataset_kind == "images" and image_paths:
         images_dir_str = st.session_state.images_dir
-        images_dir_path = Path(images_dir_str) if images_dir_str else image_paths[0].parent
-        try:
-            session_reference = str(images_dir_path.relative_to(UPLOAD_DIR))
-        except ValueError:
-            session_reference = images_dir_path.name
-        dataset_payload = {
-            "type": "images",
-            "session": session_reference,
+        images_dir_path = (
+            Path(images_dir_str)
+            if images_dir_str
+            else image_paths[0].parent
+        )
+        dataset_config = {
+            "kind": "images",
+            "path": str(images_dir_path.resolve()),
             "paths": list(st.session_state.selected_images),
             "sample_size": st.session_state.sample_size,
         }
@@ -492,55 +621,68 @@ with main_col:
     available_kinds = (
         ["summarize", "classify"] if dataset_kind == "csv" else ["img_caption", "img_resize"]
     )
-    for idx, op in enumerate(st.session_state.plan_ops):
-        op_kind = op.get("kind") or available_kinds[0]
+    for idx, op_data in enumerate(st.session_state.plan_ops):
+        op_kind = op_data.get("kind") or available_kinds[0]
         if op_kind not in available_kinds:
             op_kind = available_kinds[0]
-            st.session_state.plan_ops[idx]["kind"] = op_kind
+            op_data["kind"] = op_kind
+            op_data["params"] = _default_params_for_kind(
+                op_kind, columns if dataset_kind == "csv" else []
+            )
         expander_label = f"Operation {idx + 1}: {op_kind}"
         with st.expander(expander_label, expanded=True):
             kind_key = f"{dataset_kind}_op_kind_{idx}"
-            st.session_state.plan_ops[idx]["kind"] = st.selectbox(
+            selected_kind = st.selectbox(
                 "Kind",
                 options=available_kinds,
                 index=available_kinds.index(op_kind),
                 key=kind_key,
             )
-            op_kind = st.session_state.plan_ops[idx]["kind"]
+            if selected_kind != op_kind:
+                op_data["kind"] = selected_kind
+                op_data["params"] = _default_params_for_kind(
+                    selected_kind, columns if dataset_kind == "csv" else []
+                )
+            op_kind = op_data["kind"]
+            params = _ensure_operation_params(
+                op_data, op_kind, columns if dataset_kind == "csv" else None
+            )
 
             if dataset_kind == "csv":
                 field_key = f"{dataset_kind}_op_field_{idx}"
                 if columns:
-                    default_field = op.get("field") if op.get("field") in columns else columns[0]
-                    st.session_state.plan_ops[idx]["field"] = st.selectbox(
+                    default_field = params.get("field")
+                    if default_field not in columns:
+                        default_field = columns[0]
+                    params["field"] = st.selectbox(
                         "Field",
                         options=columns,
                         index=columns.index(default_field) if default_field in columns else 0,
                         key=field_key,
                     )
                 else:
-                    st.session_state.plan_ops[idx]["field"] = st.text_input(
+                    params["field"] = st.text_input(
                         "Field",
                         key=field_key,
-                        value=op.get("field", ""),
+                        value=params.get("field", ""),
                     )
 
                 if op_kind == "summarize":
                     instructions_key = f"{dataset_kind}_instructions_{idx}"
-                    st.session_state.plan_ops[idx]["instructions"] = st.text_area(
+                    params["instructions"] = st.text_area(
                         "Instructions",
                         key=instructions_key,
-                        value=op.get("instructions", ""),
+                        value=params.get("instructions", ""),
                         placeholder="Summarize the following text...",
                     )
 
                     max_tokens_key = f"{dataset_kind}_max_tokens_{idx}"
-                    st.session_state.plan_ops[idx]["max_tokens"] = int(
+                    params["max_tokens"] = int(
                         st.number_input(
                             "Max tokens",
                             min_value=16,
                             max_value=1024,
-                            value=int(op.get("max_tokens", 128) or 128),
+                            value=int(params.get("max_tokens", 128) or 128),
                             step=16,
                             key=max_tokens_key,
                         )
@@ -548,51 +690,77 @@ with main_col:
 
                 elif op_kind == "classify":
                     labels_key = f"{dataset_kind}_labels_{idx}"
-                    label_options = sorted(set(DEFAULT_LABEL_OPTIONS) | set(op.get("labels", [])))
-                    st.session_state.plan_ops[idx]["labels"] = st.multiselect(
+                    label_options = sorted(
+                        set(DEFAULT_LABEL_OPTIONS) | set(params.get("labels", []))
+                    )
+                    selected_labels = st.multiselect(
                         "Labels",
                         options=label_options,
-                        default=op.get("labels", []),
+                        default=params.get("labels", []),
                         key=labels_key,
                     )
+                    params["labels"] = [str(label) for label in selected_labels]
             else:
                 if op_kind == "img_caption":
-                    prompt_key = f"img_prompt_{idx}"
-                    prompt = st.text_area(
-                        "Prompt",
-                        value=op.get("prompt", ""),
-                        key=prompt_key,
+                    instructions_key = f"img_caption_instructions_{idx}"
+                    params["instructions"] = st.text_area(
+                        "Instructions",
+                        value=params.get("instructions", ""),
+                        key=instructions_key,
                         placeholder="Describe the image...",
                     )
-                    st.session_state.plan_ops[idx]["prompt"] = prompt
+                    max_tokens_key = f"img_caption_max_tokens_{idx}"
+                    params["max_tokens"] = int(
+                        st.number_input(
+                            "Max tokens",
+                            min_value=1,
+                            max_value=1024,
+                            value=int(params.get("max_tokens", 80) or 80),
+                            step=1,
+                            key=max_tokens_key,
+                        )
+                    )
                 elif op_kind == "img_resize":
                     width_key = f"img_width_{idx}"
                     height_key = f"img_height_{idx}"
-                    keep_aspect_key = f"img_keep_aspect_{idx}"
-                    width_value = st.number_input(
-                        "Width",
-                        min_value=1,
-                        max_value=8192,
-                        value=int(op.get("width", 512) or 512),
-                        step=1,
-                        key=width_key,
+                    keep_ratio_key = f"img_keep_ratio_{idx}"
+                    width_value = int(
+                        st.number_input(
+                            "Width",
+                            min_value=1,
+                            max_value=8192,
+                            value=int(params.get("width", 512) or 512),
+                            step=1,
+                            key=width_key,
+                        )
                     )
+                    params["width"] = width_value
+                    keep_ratio_value = st.checkbox(
+                        "Keep aspect ratio",
+                        value=bool(params.get("keep_ratio", True)),
+                        key=keep_ratio_key,
+                    )
+                    params["keep_ratio"] = bool(keep_ratio_value)
+                    existing_height = params.get("height", width_value)
+                    try:
+                        existing_height_int = int(existing_height)
+                    except (TypeError, ValueError):
+                        existing_height_int = width_value
+                    if existing_height_int <= 0:
+                        existing_height_int = width_value
                     height_value = st.number_input(
                         "Height",
                         min_value=1,
                         max_value=8192,
-                        value=int(op.get("height", 512) or 512),
+                        value=existing_height_int,
                         step=1,
                         key=height_key,
+                        disabled=keep_ratio_value,
                     )
-                    keep_aspect_value = st.checkbox(
-                        "Keep aspect ratio",
-                        value=bool(op.get("keep_aspect", False)),
-                        key=keep_aspect_key,
-                    )
-                    st.session_state.plan_ops[idx]["width"] = int(width_value)
-                    st.session_state.plan_ops[idx]["height"] = int(height_value)
-                    st.session_state.plan_ops[idx]["keep_aspect"] = bool(keep_aspect_value)
+                    if keep_ratio_value:
+                        params["height"] = width_value
+                    else:
+                        params["height"] = int(height_value)
 
             remove_key = f"remove_{dataset_kind}_{idx}"
             if st.button("Remove", key=remove_key):
@@ -600,29 +768,33 @@ with main_col:
                 st.experimental_rerun()
 
     add_col1, add_col2 = st.columns([1, 3])
+    add_kind_key = f"add_kind_{dataset_kind}"
+    with add_col2:
+        add_kind = st.selectbox(
+            "Operation",
+            options=available_kinds,
+            index=0,
+            key=add_kind_key,
+            label_visibility="collapsed",
+        )
     if add_col1.button("Add operation"):
-        if dataset_kind == "csv":
-            st.session_state.plan_ops.append(
-                {
-                    "kind": "summarize",
-                    "field": columns[0] if columns else "",
-                    "instructions": "",
-                    "max_tokens": 128,
-                    "labels": list(DEFAULT_LABEL_OPTIONS),
-                }
-            )
-        else:
-            st.session_state.plan_ops.append({"kind": "img_caption", "prompt": ""})
+        new_params = _default_params_for_kind(
+            add_kind, columns if dataset_kind == "csv" else []
+        )
+        st.session_state.plan_ops.append({"kind": add_kind, "params": new_params})
         st.experimental_rerun()
+
+    if dataset_config is not None:
+        debug_plan_payload = _prepare_plan_payload(
+            st.session_state.plan_ops,
+            dataset_config,
+        )
+        with st.expander("Debug: request payload", expanded=False):
+            st.json(debug_plan_payload)
 
     action_cols = st.columns(2)
     preview_clicked = action_cols[0].button("Preview", use_container_width=True)
     execute_clicked = action_cols[1].button("Execute", use_container_width=True)
-
-    plan_payload = _prepare_plan_payload(
-        st.session_state.plan_ops,
-        dataset_payload,
-    )
 
     preview_error = (
         "Select a dataset before previewing."
@@ -636,9 +808,14 @@ with main_col:
     )
 
     if preview_clicked:
-        if dataset_payload is None:
+        if dataset_config is None:
             st.error(preview_error)
         else:
+            plan_payload = _prepare_plan_payload(
+                st.session_state.plan_ops,
+                dataset_config,
+                preview=True,
+            )
             url = f"{backend_url.rstrip('/')}/preview"
             result = _post_json(url, plan_payload)
             if result is not None:
@@ -646,9 +823,13 @@ with main_col:
                 st.session_state.execute_result = None
 
     if execute_clicked:
-        if dataset_payload is None:
+        if dataset_config is None:
             st.error(execute_error)
         else:
+            plan_payload = _prepare_plan_payload(
+                st.session_state.plan_ops,
+                dataset_config,
+            )
             url = f"{backend_url.rstrip('/')}/execute"
             result = _post_json(url, plan_payload)
             if result is not None:
