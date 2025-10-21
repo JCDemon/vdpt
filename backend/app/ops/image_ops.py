@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any, Dict
 
 from PIL import Image
+
+from ...vdpt.providers import get_vision_provider
 
 from .base import OperationHandler
 from .registry import register
@@ -88,26 +89,41 @@ class ImageResizeHandler(OperationHandler):
 class ImageCaptionHandler(OperationHandler):
     kind = "img_caption"
 
-    _CAPTIONS = [
-        "A vibrant abstract scene.",
-        "A close-up portrait with warm light.",
-        "A calm landscape with open skies.",
-        "An energetic snapshot full of motion.",
-    ]
-
     def preview(self, row: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
-        return self._caption(row)
+        return self._caption(row, params)
 
     def execute(self, row: Dict[str, Any], params: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
-        return self._caption(row)
+        return self._caption(row, params)
 
-    def _caption(self, row: Dict[str, Any]) -> Dict[str, Any]:
+    def _caption(self, row: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         value = row.get("image_path")
         if not value:
             raise ValueError("img_caption requires 'image_path' in the row")
-        digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
-        index = int(digest, 16) % len(self._CAPTIONS)
-        return {"caption": self._CAPTIONS[index]}
+
+        prompt_raw = params.get("prompt") if params else None
+        prompt = str(prompt_raw) if prompt_raw is not None else None
+
+        max_tokens_raw = params.get("max_tokens") if params else None
+        if max_tokens_raw is not None:
+            try:
+                max_tokens = int(max_tokens_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("img_caption max_tokens must be an integer") from exc
+        else:
+            max_tokens = None
+
+        seed_raw = params.get("seed") if params else None
+        if seed_raw is not None:
+            try:
+                seed = int(seed_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("img_caption seed must be an integer") from exc
+        else:
+            seed = None
+
+        provider = get_vision_provider()
+        caption = provider.caption(value, prompt=prompt, max_tokens=max_tokens, seed=seed)
+        return {"caption": caption}
 
 
 register(ImageResizeHandler())

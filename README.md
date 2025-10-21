@@ -22,6 +22,12 @@ This repository hosts a minimal FastAPI application that exposes a todo-focused 
    python -m pip install -r backend/requirements.txt pytest
    ```
 
+3. (Optional but recommended) Install the git hooks:
+   ```bash
+   python -m pip install pre-commit
+   pre-commit install
+   ```
+
 ## Running the API locally
 
 Use the helper script to start a local development server:
@@ -38,6 +44,17 @@ Execute the test suite with:
 
 ```bash
 pytest
+```
+
+## Code style and linting
+
+This repository uses [pre-commit](https://pre-commit.com/) to enforce formatting with Black and
+linting with Ruff using the configuration defined in `pyproject.toml`.
+
+Run the hooks across the repository with:
+
+```bash
+pre-commit run --all-files
 ```
 
 

@@ -1,4 +1,3 @@
-import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -7,8 +6,8 @@ import pandas as pd
 from PIL import Image
 
 from backend.app.main import Plan, Operation, execute, preview
-from backend.app.ops.image_ops import ImageCaptionHandler
 from backend.vdpt.providers.mock import MockProvider
+from backend.vdpt.providers.vision import MockVisionProvider
 
 
 def _create_test_images(session_dir: Path) -> list[Path]:
@@ -26,9 +25,8 @@ def _create_test_images(session_dir: Path) -> list[Path]:
 
 
 def _expected_caption(path: Path) -> str:
-    digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()
-    captions = ImageCaptionHandler._CAPTIONS  # type: ignore[attr-defined]
-    return captions[int(digest, 16) % len(captions)]
+    provider = MockVisionProvider()
+    return provider.caption(path)
 
 
 def test_preview_and_execute_images(tmp_path):
