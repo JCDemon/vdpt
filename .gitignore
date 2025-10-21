@@ -51,7 +51,9 @@ coverage.xml
 htmlcov/
 
 # Execution artifacts
-artifacts/
+artifacts/*
+!artifacts/bundled_images/
+!artifacts/bundled_images/**
 
 
 # Test assets
