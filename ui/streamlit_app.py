@@ -692,22 +692,16 @@ else:
 
     if checkbox_value != st.session_state.use_bundled_images:
         if checkbox_value:
-            if _enable_bundled_images(
-                remember_previous=not st.session_state.use_bundled_images
-            ):
+            if _enable_bundled_images(remember_previous=not st.session_state.use_bundled_images):
                 st.sidebar.success("Bundled sample images loaded.")
             else:
-                st.sidebar.warning(
-                    "Bundled sample images are unavailable."
-                )
+                st.sidebar.warning("Bundled sample images are unavailable.")
                 st.session_state.use_bundled_images = False
         else:
             _disable_bundled_images()
 
     if bundled_available:
-        st.sidebar.caption(
-            f"{len(bundled_images)} bundled image(s) in {BUNDLED_IMAGE_DIR}"
-        )
+        st.sidebar.caption(f"{len(bundled_images)} bundled image(s) in {BUNDLED_IMAGE_DIR}")
     else:
         st.sidebar.caption(f"No bundled images found in {BUNDLED_IMAGE_DIR}")
 
