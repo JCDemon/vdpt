@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Any
 from pathlib import Path
 
+
 class OperationHandler:
     kind: str  # e.g., "summarize", "img_resize"
 

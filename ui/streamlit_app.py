@@ -195,9 +195,7 @@ uploaded_file = st.sidebar.file_uploader("Upload CSV dataset", type=["csv"])
 uploaded_path = _persist_uploaded_file(uploaded_file)
 
 use_sample = False
-if sample_csv_path and st.sidebar.checkbox(
-    "Use bundled sample CSV", value=not bool(uploaded_path)
-):
+if sample_csv_path and st.sidebar.checkbox("Use bundled sample CSV", value=not bool(uploaded_path)):
     use_sample = True
     st.sidebar.caption(f"Using sample at {sample_csv_path}")
 
@@ -246,7 +244,13 @@ with main_col:
     max_preview_rows = 50
     if current_dataset_path:
         try:
-            row_count = sum(1 for _ in Path(current_dataset_path).open("r", encoding="utf-8", errors="ignore")) - 1
+            row_count = (
+                sum(
+                    1
+                    for _ in Path(current_dataset_path).open("r", encoding="utf-8", errors="ignore")
+                )
+                - 1
+            )
             if row_count > 0:
                 max_preview_rows = min(max_preview_rows, row_count)
         except Exception:
@@ -284,9 +288,7 @@ with main_col:
             else:
                 if field_key not in st.session_state:
                     st.session_state[field_key] = op.get("field", "")
-                st.session_state.plan_ops[idx]["field"] = st.text_input(
-                    "Field", key=field_key
-                )
+                st.session_state.plan_ops[idx]["field"] = st.text_input("Field", key=field_key)
 
             if op_kind == "summarize":
                 instructions_key = f"instructions_{idx}"
@@ -312,9 +314,7 @@ with main_col:
 
             elif op_kind == "classify":
                 labels_key = f"labels_{idx}"
-                label_options = sorted(
-                    set(DEFAULT_LABEL_OPTIONS) | set(op.get("labels", []))
-                )
+                label_options = sorted(set(DEFAULT_LABEL_OPTIONS) | set(op.get("labels", [])))
                 st.session_state.plan_ops[idx]["labels"] = st.multiselect(
                     "Labels",
                     options=label_options,
@@ -399,9 +399,9 @@ with provenance_col:
             freq_items = sorted(frequency.items(), key=lambda item: item[1], reverse=True)[
                 :TOP_K_PROVENANCE
             ]
-            freq_df = pd.DataFrame(freq_items, columns=["operation", "normalized_frequency"]).set_index(
-                "operation"
-            )
+            freq_df = pd.DataFrame(
+                freq_items, columns=["operation", "normalized_frequency"]
+            ).set_index("operation")
             st.caption("Most frequent operations")
             st.bar_chart(freq_df)
         if recency:
@@ -413,4 +413,3 @@ with provenance_col:
             )
             st.caption("Most recent operations")
             st.bar_chart(rec_df)
-

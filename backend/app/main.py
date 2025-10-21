@@ -21,6 +21,7 @@ from .provenance.recorder import bump_frequency, bump_recency, snapshot
 
 __version__ = "0.1.0"
 
+
 def get_text_provider() -> TextLLMProvider:
     """Return the configured text generation provider."""
     if os.getenv("DASHSCOPE_API_KEY"):
@@ -62,9 +63,7 @@ def provenance_snapshot() -> Dict[str, Any]:
     return snapshot()
 
 
-def preview(
-    plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)
-) -> Dict[str, Any]:
+def preview(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) -> Dict[str, Any]:
     if plan.dataset and plan.dataset.type == "csv":
         return _preview_csv(plan, provider)
 
@@ -77,9 +76,7 @@ def preview(
     }
 
 
-def execute(
-    plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)
-) -> Dict[str, Any]:
+def execute(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) -> Dict[str, Any]:
     if plan.dataset and plan.dataset.type == "csv":
         return _execute_csv(plan, provider)
 
@@ -125,9 +122,7 @@ def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     artifacts_dir = _create_artifact_dir()
-    processed_df, _ = _apply_tabular_ops(
-        df.copy(), plan.ops, provider, out_dir=artifacts_dir
-    )
+    processed_df, _ = _apply_tabular_ops(df.copy(), plan.ops, provider, out_dir=artifacts_dir)
     output_path = artifacts_dir / "output.csv"
     write_csv(processed_df, output_path)
 
@@ -210,11 +205,13 @@ def _apply_tabular_ops(
                 values = [result.get(column) for result in results]
                 working.loc[indices, column] = values
                 if column not in existing_columns:
-                    new_columns.append({
-                        "name": column,
-                        "operation": "summarize",
-                        "source": field,
-                    })
+                    new_columns.append(
+                        {
+                            "name": column,
+                            "operation": "summarize",
+                            "source": field,
+                        }
+                    )
             provenance_keys.update({f"op:{op.kind}", f"field:{field}"})
         elif op.kind == "classify":
             field = params.get("field")
@@ -245,12 +242,14 @@ def _apply_tabular_ops(
                     raise HTTPException(status_code=500, detail=str(exc)) from exc
 
             working[output_col] = working[field].apply(classify_value)
-            new_columns.append({
-                "name": output_col,
-                "operation": "classify",
-                "source": field,
-                "labels": list(labels),
-            })
+            new_columns.append(
+                {
+                    "name": output_col,
+                    "operation": "classify",
+                    "source": field,
+                    "labels": list(labels),
+                }
+            )
             provenance_keys.update({f"op:{op.kind}", f"field:{field}"})
 
     if provenance_keys:
@@ -284,16 +283,12 @@ def list_todos(service: TodoService = Depends(get_service)) -> List[TodoRead]:
     return [TodoRead(**todo) for todo in service.list_todos()]
 
 
-def create_todo(
-    payload: TodoCreate, service: TodoService = Depends(get_service)
-) -> TodoRead:
+def create_todo(payload: TodoCreate, service: TodoService = Depends(get_service)) -> TodoRead:
     created = service.create(payload)
     return TodoRead(**created)
 
 
-def complete_todo(
-    todo_id: int, service: TodoService = Depends(get_service)
-) -> TodoRead:
+def complete_todo(todo_id: int, service: TodoService = Depends(get_service)) -> TodoRead:
     try:
         completed = service.complete(todo_id)
     except KeyError as exc:
