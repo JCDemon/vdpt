@@ -473,6 +473,42 @@ def _ensure_operation_params(
     return params
 
 
+def _extract_run_directory(artifacts: Dict[str, Any]) -> Optional[Path]:
+    if not isinstance(artifacts, dict):
+        return None
+
+    candidates: List[Path] = []
+
+    def _collect_paths(value: Any) -> None:
+        if isinstance(value, str) and value:
+            try:
+                candidates.append(Path(value))
+            except (TypeError, ValueError):
+                return
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                _collect_paths(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                _collect_paths(item)
+
+    _collect_paths(artifacts)
+
+    for path in candidates:
+        for candidate in (path, *path.parents):
+            if candidate == candidate.parent:
+                continue
+            name = candidate.name
+            parent_name = candidate.parent.name if candidate.parent != candidate else ""
+            if name.startswith("run-") and parent_name == "artifacts":
+                return candidate
+    for path in candidates:
+        parent = path.parent
+        if parent != path:
+            return parent
+    return None
+
+
 def _prepare_plan_payload(
     ops: List[Dict[str, Any]],
     dataset: Optional[Dict[str, Any]],
@@ -986,8 +1022,25 @@ with main_col:
             st.json(debug_plan_payload)
 
     action_cols = st.columns(2)
-    preview_clicked = action_cols[0].button("Preview", use_container_width=True)
-    execute_clicked = action_cols[1].button("Execute", use_container_width=True)
+
+    preview_disabled = False
+    execute_disabled = False
+    action_hint: Optional[str] = None
+
+    if dataset_kind == "images" and not image_paths:
+        preview_disabled = True
+        execute_disabled = True
+        action_hint = "Upload or select at least one image to enable preview and execution."
+
+    preview_clicked = action_cols[0].button(
+        "Preview", use_container_width=True, disabled=preview_disabled
+    )
+    execute_clicked = action_cols[1].button(
+        "Execute", use_container_width=True, disabled=execute_disabled
+    )
+
+    if action_hint:
+        st.caption(action_hint)
 
     preview_error = (
         "Select a dataset before previewing."
@@ -1047,6 +1100,27 @@ with main_col:
         st.markdown("### Execution results")
         result = st.session_state.execute_result
         artifacts = result.get("artifacts") or {}
+        run_dir = _extract_run_directory(artifacts)
+
+        if result.get("ok"):
+            st.success("Execution finished")
+            if run_dir:
+                run_cols = st.columns([5, 1])
+                run_dir_str = str(run_dir)
+                run_cols[0].code(run_dir_str, language="bash")
+                if run_cols[1].button("Copy path", key="copy_run_dir_button"):
+                    st.session_state["copied_run_dir"] = run_dir_str
+                    st.toast(f"Copied run directory path: {run_dir_str}")
+                if run_dir.exists():
+                    try:
+                        run_cols[0].markdown(
+                            f"[Open folder]({run_dir.resolve().as_uri()})"
+                        )
+                    except ValueError:
+                        pass
+        elif run_dir:
+            st.info(f"Artifacts saved under {run_dir}")
+
         if artifacts:
             st.markdown("#### Artifacts")
             for name, value in artifacts.items():
