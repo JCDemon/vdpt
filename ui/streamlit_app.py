@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
-from uuid import uuid4
 
 import pandas as pd
 import requests
@@ -45,12 +45,12 @@ if "preview_result" not in st.session_state:
     st.session_state.preview_result = None
 if "execute_result" not in st.session_state:
     st.session_state.execute_result = None
-if "dataset_mode" not in st.session_state:
-    st.session_state.dataset_mode = "csv"
-if "image_session_id" not in st.session_state:
-    st.session_state.image_session_id = uuid4().hex
-if "image_paths" not in st.session_state:
-    st.session_state.image_paths = []
+if "dataset_kind" not in st.session_state:
+    st.session_state.dataset_kind = "csv"
+if "images_dir" not in st.session_state:
+    st.session_state.images_dir = ""
+if "selected_images" not in st.session_state:
+    st.session_state.selected_images = []
 
 
 def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
@@ -114,8 +114,16 @@ def _persist_uploaded_file(upload) -> Optional[Path]:
     return target
 
 
-def _get_image_session_dir(session_id: str) -> Path:
-    return UPLOAD_DIR / session_id / IMAGE_UPLOAD_SUBDIR
+def _ensure_images_dir() -> Path:
+    images_dir_str = st.session_state.get("images_dir", "")
+    if images_dir_str:
+        images_dir = Path(images_dir_str)
+    else:
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        images_dir = UPLOAD_DIR / IMAGE_UPLOAD_SUBDIR / timestamp
+        st.session_state.images_dir = str(images_dir)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    return images_dir
 
 
 def _persist_uploaded_images(uploads) -> List[Path]:
@@ -123,15 +131,13 @@ def _persist_uploaded_images(uploads) -> List[Path]:
     if not uploads:
         return saved
 
-    session_id = st.session_state.image_session_id
-    session_dir = _get_image_session_dir(session_id)
-    session_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = _ensure_images_dir()
 
     for upload in uploads:
         if upload is None:
             continue
         filename = Path(upload.name).name
-        target = session_dir / filename
+        target = images_dir / filename
         try:
             with target.open("wb") as fp:
                 fp.write(upload.getbuffer())
@@ -143,11 +149,36 @@ def _persist_uploaded_images(uploads) -> List[Path]:
     return saved
 
 
-def _list_image_paths(session_id: str) -> List[Path]:
-    session_dir = _get_image_session_dir(session_id)
-    if not session_dir.exists():
+def _resolve_selected_image_paths() -> List[Path]:
+    images_dir_str = st.session_state.get("images_dir", "")
+    if not images_dir_str:
         return []
-    return sorted(p for p in session_dir.iterdir() if p.is_file())
+
+    images_dir = Path(images_dir_str)
+    if not images_dir.exists():
+        return []
+
+    resolved: List[Path] = []
+    remaining: List[str] = []
+    for rel_path in st.session_state.selected_images:
+        path = images_dir / rel_path
+        if path.exists():
+            resolved.append(path)
+            remaining.append(rel_path)
+    if remaining != st.session_state.selected_images:
+        st.session_state.selected_images = remaining
+    return resolved
+
+
+def _format_size(num_bytes: int) -> str:
+    step = 1024.0
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(num_bytes)
+    for unit in units:
+        if size < step or unit == units[-1]:
+            return f"{size:.1f} {unit}"
+        size /= step
+    return f"{size:.1f} B"
 
 
 def _build_image_preview_table(records: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -280,26 +311,26 @@ st.sidebar.header("Configuration")
 backend_url = st.sidebar.text_input("Backend URL", DEFAULT_BACKEND_URL)
 
 mode_labels = {"csv": "CSV", "images": "Images"}
-mode_index = ["csv", "images"].index(st.session_state.dataset_mode)
+mode_index = ["csv", "images"].index(st.session_state.dataset_kind)
 selected_label = st.sidebar.radio(
     "Dataset type",
     options=[mode_labels[mode] for mode in ["csv", "images"]],
     index=mode_index,
 )
-selected_mode = "images" if selected_label == mode_labels["images"] else "csv"
-if selected_mode != st.session_state.dataset_mode:
-    st.session_state.dataset_mode = selected_mode
+selected_kind = "images" if selected_label == mode_labels["images"] else "csv"
+if selected_kind != st.session_state.dataset_kind:
+    st.session_state.dataset_kind = selected_kind
     st.session_state.plan_ops = []  # type: ignore[assignment]
     st.session_state.preview_result = None
     st.session_state.execute_result = None
 
-dataset_mode = st.session_state.dataset_mode
+dataset_kind = st.session_state.dataset_kind
 
 current_dataset_path = ""
 columns: List[str] = []
 image_paths: List[Path] = []
 
-if dataset_mode == "csv":
+if dataset_kind == "csv":
     sample_csv_path = _find_first_existing(SAMPLE_CSV_CANDIDATES)
     uploaded_file = st.sidebar.file_uploader("Upload CSV dataset", type=["csv"])
     uploaded_path = _persist_uploaded_file(uploaded_file)
@@ -341,14 +372,51 @@ if dataset_mode == "csv":
 else:
     st.session_state.dataset_path = ""
     uploaded_images = st.sidebar.file_uploader(
-        "Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
+        "Upload images",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
     )
-    _persist_uploaded_images(uploaded_images)
-    image_paths = _list_image_paths(st.session_state.image_session_id)
-    st.session_state.image_paths = [str(path) for path in image_paths]
-    st.sidebar.caption(
-        f"Session: {st.session_state.image_session_id} — {len(image_paths)} image(s) uploaded"
-    )
+    saved_images = _persist_uploaded_images(uploaded_images)
+    if saved_images:
+        images_dir = Path(st.session_state.images_dir)
+        for path in saved_images:
+            try:
+                rel_path = path.relative_to(images_dir)
+            except ValueError:
+                rel_path = Path(path.name)
+            rel_str = rel_path.as_posix()
+            if rel_str not in st.session_state.selected_images:
+                st.session_state.selected_images.append(rel_str)
+
+    use_sample_images = st.sidebar.checkbox("Use bundled sample images")
+    if st.sidebar.button("Load sample plan (images)"):
+        st.sidebar.info("Sample plan loading for images will be available in a future update.")
+    if use_sample_images:
+        st.sidebar.caption("Bundled sample images are not yet available.")
+
+    image_paths = _resolve_selected_image_paths()
+    images_dir_display = st.session_state.images_dir
+    if images_dir_display:
+        st.sidebar.caption(
+            f"Images stored in {images_dir_display} ({len(image_paths)} file(s) saved)"
+        )
+
+    if image_paths:
+        st.sidebar.markdown("#### Saved images")
+        base_dir = Path(st.session_state.images_dir)
+        for rel_path in list(st.session_state.selected_images):
+            path = base_dir / rel_path
+            if not path.exists():
+                continue
+            cols = st.sidebar.columns([4, 1])
+            cols[0].write(f"{path.name} ({_format_size(path.stat().st_size)})")
+            if cols[1].button("Remove", key=f"remove_{rel_path}"):
+                st.session_state.selected_images = [
+                    item for item in st.session_state.selected_images if item != rel_path
+                ]
+                st.experimental_rerun()
+    else:
+        st.sidebar.info("Upload PNG or JPG files to begin.")
 
 dataset_payload: Optional[Dict[str, Any]] = None
 
@@ -357,23 +425,24 @@ main_col, provenance_col = st.columns([3, 1.2])
 with main_col:
     st.subheader("Plan builder")
 
-    if dataset_mode == "csv":
+    if dataset_kind == "csv":
         if current_dataset_path:
             st.info(f"Dataset: {current_dataset_path}")
         else:
             st.warning("Upload a CSV file or enable the bundled sample to build a plan.")
     else:
-        session_id = st.session_state.image_session_id
         image_count = len(image_paths)
         if image_count:
-            st.info(f"Session {session_id}: {image_count} image(s) ready for processing.")
+            images_dir_display = st.session_state.images_dir
+            location_note = f" from {images_dir_display}" if images_dir_display else ""
+            st.info(f"{image_count} image(s) ready for processing{location_note}.")
             st.markdown("#### Uploaded images")
             _render_image_gallery(image_paths)
         else:
             st.warning("Upload one or more images to build a plan.")
 
     max_preview_rows = 50
-    if dataset_mode == "csv" and current_dataset_path:
+    if dataset_kind == "csv" and current_dataset_path:
         try:
             row_count = (
                 sum(
@@ -386,7 +455,7 @@ with main_col:
                 max_preview_rows = min(max_preview_rows, row_count)
         except Exception:
             pass
-    elif dataset_mode == "images":
+    elif dataset_kind == "images":
         max_preview_rows = len(image_paths) if image_paths else 1
 
     slider_max = max_preview_rows if max_preview_rows >= 1 else 1
@@ -399,31 +468,29 @@ with main_col:
         step=1,
     )
 
-    if dataset_mode == "csv" and current_dataset_path:
+    if dataset_kind == "csv" and current_dataset_path:
         dataset_payload = {
             "type": "csv",
             "path": current_dataset_path,
             "sample_size": st.session_state.sample_size,
         }
-    elif dataset_mode == "images" and image_paths:
-        session_id = st.session_state.image_session_id
-        base_dir = UPLOAD_DIR / session_id
-        relative_paths: List[str] = []
-        for path in image_paths:
-            try:
-                relative_paths.append(str(path.relative_to(base_dir)))
-            except ValueError:
-                relative_paths.append(str(path))
+    elif dataset_kind == "images" and image_paths:
+        images_dir_str = st.session_state.images_dir
+        images_dir_path = Path(images_dir_str) if images_dir_str else image_paths[0].parent
+        try:
+            session_reference = str(images_dir_path.relative_to(UPLOAD_DIR))
+        except ValueError:
+            session_reference = images_dir_path.name
         dataset_payload = {
             "type": "images",
-            "session": session_id,
-            "paths": relative_paths,
+            "session": session_reference,
+            "paths": list(st.session_state.selected_images),
             "sample_size": st.session_state.sample_size,
         }
 
     st.markdown("### Operations")
     available_kinds = (
-        ["summarize", "classify"] if dataset_mode == "csv" else ["img_caption", "img_resize"]
+        ["summarize", "classify"] if dataset_kind == "csv" else ["img_caption", "img_resize"]
     )
     for idx, op in enumerate(st.session_state.plan_ops):
         op_kind = op.get("kind") or available_kinds[0]
@@ -432,7 +499,7 @@ with main_col:
             st.session_state.plan_ops[idx]["kind"] = op_kind
         expander_label = f"Operation {idx + 1}: {op_kind}"
         with st.expander(expander_label, expanded=True):
-            kind_key = f"{dataset_mode}_op_kind_{idx}"
+            kind_key = f"{dataset_kind}_op_kind_{idx}"
             st.session_state.plan_ops[idx]["kind"] = st.selectbox(
                 "Kind",
                 options=available_kinds,
@@ -441,8 +508,8 @@ with main_col:
             )
             op_kind = st.session_state.plan_ops[idx]["kind"]
 
-            if dataset_mode == "csv":
-                field_key = f"{dataset_mode}_op_field_{idx}"
+            if dataset_kind == "csv":
+                field_key = f"{dataset_kind}_op_field_{idx}"
                 if columns:
                     default_field = op.get("field") if op.get("field") in columns else columns[0]
                     st.session_state.plan_ops[idx]["field"] = st.selectbox(
@@ -459,7 +526,7 @@ with main_col:
                     )
 
                 if op_kind == "summarize":
-                    instructions_key = f"{dataset_mode}_instructions_{idx}"
+                    instructions_key = f"{dataset_kind}_instructions_{idx}"
                     st.session_state.plan_ops[idx]["instructions"] = st.text_area(
                         "Instructions",
                         key=instructions_key,
@@ -467,7 +534,7 @@ with main_col:
                         placeholder="Summarize the following text...",
                     )
 
-                    max_tokens_key = f"{dataset_mode}_max_tokens_{idx}"
+                    max_tokens_key = f"{dataset_kind}_max_tokens_{idx}"
                     st.session_state.plan_ops[idx]["max_tokens"] = int(
                         st.number_input(
                             "Max tokens",
@@ -480,7 +547,7 @@ with main_col:
                     )
 
                 elif op_kind == "classify":
-                    labels_key = f"{dataset_mode}_labels_{idx}"
+                    labels_key = f"{dataset_kind}_labels_{idx}"
                     label_options = sorted(set(DEFAULT_LABEL_OPTIONS) | set(op.get("labels", [])))
                     st.session_state.plan_ops[idx]["labels"] = st.multiselect(
                         "Labels",
@@ -527,14 +594,14 @@ with main_col:
                     st.session_state.plan_ops[idx]["height"] = int(height_value)
                     st.session_state.plan_ops[idx]["keep_aspect"] = bool(keep_aspect_value)
 
-            remove_key = f"remove_{dataset_mode}_{idx}"
+            remove_key = f"remove_{dataset_kind}_{idx}"
             if st.button("Remove", key=remove_key):
                 st.session_state.plan_ops.pop(idx)
                 st.experimental_rerun()
 
     add_col1, add_col2 = st.columns([1, 3])
     if add_col1.button("Add operation"):
-        if dataset_mode == "csv":
+        if dataset_kind == "csv":
             st.session_state.plan_ops.append(
                 {
                     "kind": "summarize",
@@ -559,12 +626,12 @@ with main_col:
 
     preview_error = (
         "Select a dataset before previewing."
-        if dataset_mode == "csv"
+        if dataset_kind == "csv"
         else "Upload at least one image before previewing."
     )
     execute_error = (
         "Select a dataset before executing."
-        if dataset_mode == "csv"
+        if dataset_kind == "csv"
         else "Upload at least one image before executing."
     )
 
@@ -592,7 +659,7 @@ with main_col:
         preview = st.session_state.preview_result
         records = preview.get("records") or []
         if records:
-            if dataset_mode == "images":
+            if dataset_kind == "images":
                 st.dataframe(_build_image_preview_table(records))
             else:
                 st.dataframe(pd.DataFrame(records))
