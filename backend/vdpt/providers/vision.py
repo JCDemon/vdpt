@@ -125,4 +125,3 @@ def reset_vision_provider_cache() -> None:
 # Register built-in providers.
 register_vision_provider("mock", MockVisionProvider)
 register_vision_provider("qwen_vl", lambda: _UnimplementedVisionProvider("qwen_vl"))
-
