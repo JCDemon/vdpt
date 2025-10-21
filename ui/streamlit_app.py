@@ -605,11 +605,7 @@ with main_col:
         }
     elif dataset_kind == "images" and image_paths:
         images_dir_str = st.session_state.images_dir
-        images_dir_path = (
-            Path(images_dir_str)
-            if images_dir_str
-            else image_paths[0].parent
-        )
+        images_dir_path = Path(images_dir_str) if images_dir_str else image_paths[0].parent
         dataset_config = {
             "kind": "images",
             "path": str(images_dir_path.resolve()),
@@ -778,9 +774,7 @@ with main_col:
             label_visibility="collapsed",
         )
     if add_col1.button("Add operation"):
-        new_params = _default_params_for_kind(
-            add_kind, columns if dataset_kind == "csv" else []
-        )
+        new_params = _default_params_for_kind(add_kind, columns if dataset_kind == "csv" else [])
         st.session_state.plan_ops.append({"kind": add_kind, "params": new_params})
         st.experimental_rerun()
 
