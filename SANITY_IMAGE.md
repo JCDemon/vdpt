@@ -1,84 +1,63 @@
-# Image workflow sanity walkthrough
+# Image preview sanity walkthrough
 
-Follow this guided flow to manually validate that the multimodal pipeline can ingest raw images, generate previews, and produce saved artifacts.
+Use this checklist to confirm the built-in image sample plan works end-to-end and renders the thumbnail table correctly.
 
-## 1. Start the backend API
+## 1. Start the FastAPI backend
 
-Run the FastAPI backend in a dedicated terminal so the UI can talk to it:
+Open a terminal, install backend dependencies if needed, then launch the service:
 
 ```bash
 ./dev-run.sh
 ```
 
-Leave the server running; you should see Uvicorn logs confirming that the app is serving on `http://127.0.0.1:8000`.
-
-> _Screenshot placeholder – backend terminal output_
+Keep the process running and wait for Uvicorn to print that it is serving `http://127.0.0.1:8000`.
 
 ## 2. Launch the Streamlit UI
 
-In a separate terminal (with the same virtual environment activated), launch the UI:
+In a second terminal (same virtual environment), install the UI requirements and start Streamlit:
 
 ```bash
 python -m pip install -r ui/requirements.txt
 streamlit run ui/streamlit_app.py
 ```
 
-Wait for Streamlit to report the local URL (typically `http://localhost:8501`), then open it in your browser.
+When Streamlit shows the local URL (usually `http://localhost:8501`), open it in your browser.
 
-> _Screenshot placeholder – Streamlit home screen_
+## 3. Switch to Images mode
 
-## 3. Prepare sample images (optional helper)
+Inside the UI sidebar, choose **Images** under **Dataset type**. The sidebar now shows upload controls plus the bundled helpers.
 
-The repository ships with a few demo assets under `samples/images/`. To quickly reuse them across sessions, you can seed the current upload directory with:
+Confirm the helper caption lists three bundled assets located at `artifacts/bundled_images/`. The UI writes
+tiny placeholder PNGs into that directory automatically the first time you open Images mode, so no manual
+setup is required.
 
-```bash
-./dev-seed-images.sh <session-id>
-```
+## 4. Load the bundled sample plan
 
-Replace `<session-id>` with the identifier shown in the UI sidebar (e.g. `20240515-153000`). The script copies `.png` and `.jpg` files into `artifacts/uploads/<session-id>/images/` so they appear in the file picker without manually uploading each time.
+Click **Load sample plan (images)**. The app should immediately:
 
-## 4. Upload three images
+- Populate the operations list with two steps: `img_caption` (instructions `用一句中文描述图片内容`,
+  max tokens 80) and `img_resize` (width/height `384`, keep ratio enabled).
+- Select the bundled images (`forest.png`, `ocean.png`, `sunrise.png`) and show their thumbnails in the main panel.
+- Adjust the **Preview sample size** slider to 3.
 
-If you did not run the helper script, use the **Upload files** widget in the Streamlit sidebar to add any three images (PNG or JPG). The uploaded files will appear in the session's image library.
+If any of those conditions fail, make sure the Streamlit process has permission to write to
+`artifacts/bundled_images/` so it can regenerate the placeholder PNG files.
 
-> _Screenshot placeholder – image uploads in sidebar_
+## 5. Run Preview
 
-## 5. Build a plan with `img_caption` and `img_resize`
+Press **Preview**. The backend receives a `/preview` request that references only the three bundled files (limited by the slider).
 
-1. In the **Plan editor** panel, add an `img_caption` operation. Configure it to read from the uploaded images collection.
-2. Add a second step `img_resize` that depends on the captions and resizes the images to a smaller resolution (e.g. `512x512`).
-3. Save the plan.
+In the **Preview output** section, confirm the rendered table has:
 
-Ensure the preview count at the top of the panel is set to **3** so every uploaded image is sampled during preview.
+- A **Thumb** column that displays 64px thumbnails of each bundled image.
+- A **Filename** column listing `forest.png`, `ocean.png`, and `sunrise.png`.
+- A **Caption** column filled by the `img_caption` step (Chinese one-sentence descriptions).
+- A **Resized path** column pointing to temporary files under `artifacts/tmp/.../img_resize/`.
 
-> _Screenshot placeholder – plan editor with two steps_
+The row count should match the slider value (3 by default).
 
-## 6. Preview the plan
+## 6. (Optional) Adjust the sample size
 
-Click **Preview**. The UI should execute the plan with `preview=3` and display both the generated captions and resized image thumbnails in the results pane.
+Move the **Preview sample size** slider to 1 or 2 and click **Preview** again. The table should refresh to show only that many rows, confirming the request payload respects the slider limit.
 
-> _Screenshot placeholder – preview results_
-
-## 7. Execute the full run
-
-Once the preview looks correct, click **Execute**. The UI will run the entire workflow and report the run identifier plus the artifacts directory path (e.g. `artifacts/runs/<run-id>`).
-
-> _Screenshot placeholder – execution confirmation_
-
-## 8. Inspect generated artifacts
-
-Open the reported directory to review the outputs. You should find:
-
-- Generated captions (JSON or text depending on provider configuration).
-- Resized images under an `img_resize`-specific folder.
-- Provenance metadata for the run.
-
-You can list the directory contents from the terminal, substituting the actual run identifier:
-
-```bash
-ls -R artifacts/runs/<run-id>
-```
-
-> _Screenshot placeholder – artifacts directory listing_
-
-If every step above completes successfully, the image pipeline is functioning end-to-end.
+With these checks complete, the bundled image workflow is ready for manual QA runs.

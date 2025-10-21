@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -18,6 +21,34 @@ UPLOAD_DIR = Path("artifacts") / "uploads"
 IMAGE_UPLOAD_SUBDIR = "images"
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+BUNDLED_IMAGE_DIR = _REPO_ROOT / "artifacts" / "bundled_images"
+
+_BUNDLED_IMAGE_PAYLOADS = {
+    "sunrise.png": (
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAABUElEQVR4nO3YsUsCUQDH8ffOgzAJEUKn"
+        "AoeIlqBoCYqShsDIq6GmiHJJmiMyIpyci4Ki4f4AXWwNQRCRhnBpiVaHwAiTEKOU+gt83RG8n8Lvs97y"
+        "+/J4d3Dyp5QS/cxAD/gvBqAxAI0BaAxAYwAaA9AYgMYANAagMQCNAWgMQDMVzyrPL0dX+e92x/QY9rE1E"
+        "vRrm+Wc6gTi6Vs7aRUudhJrMweXd9o2uaI6gVq9+fnVFkLE5saDAZ+uSe6oAtJ7S/P7dnR2bGt5MjId1r"
+        "bJFan+O13/aOWKT2eZ+/WFiVR8UdMoN7regdf3ZvmxGhjy7q5M5c+3r3MPOmc51zVASrl5mq3WGkKIt0Z"
+        "rNNSLryChuAPD/sGbw9WNk6x3wPQYhp20dM5y7o870Pv6/kvMADQGoDEAjQFoDEBjABoD0BiAxgA0BqAx"
+        "AI0BaAxAYwDaL9y0Qb5RRCsoAAAAAElFTkSuQmCC"
+    ),
+    "forest.png": (
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAuElEQVR4nO3TMQqDMABG4bbp7iR0cenq"
+        "0tUb5AxOmXqGHqE36FrwEl4u0MFd0EIekfdNAZf/YXJO33Sq2YUe8C8DaAbQDKAZQDOAZgDNAJoBNANoB"
+        "tAMoBlAu658m55Te2+Xc/fo+tgXmbTNWkAIIb5isSn7VH+Fqg9Yu0I55/k9L+chDc2tKTJpG98A7dAB42"
+        "cstmO3Q/+BKhhAM4BmAM0AmgE0A2gG0AygGUAzgGYAzQCaAbTqA35QXA5MC4MMrAAAAABJRU5ErkJggg=="
+    ),
+    "ocean.png": (
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAABR0lEQVR4nO3ZoU8CUQDH8Xd4XrhwQw1O"
+        "CBQJyNk0iZE5qAaMaNH/gOE/IM2KTYsb2oVAwkrjgtsRIKCJqThxOxjYaM89dL7f2H6f9nbl993uXjk"
+        "jf90RiyyEHvBXDEBjABoD0BiAxgA0BqAxAI0BaAxAYwAaA9AYgGb+8Mx/vH+q34TM5cl4lEgfb6YOtc1"
+        "SJw3otRp+o3JQuLVsJxgO6pcn9sp6JJnSOU6F9BXyqle7uXPLdoQQlu3s5IreQ1njMFXSgPfn9mosOTu"
+        "uxdy3nq9l0nyUP+LpVBjGfy75JWlAOBrvd73Zsd/1wtG4lknzkQa4mdNm5SL4+hBCBMNB8660nT3TOEy"
+        "V9BaKuPufry+10tGSaU3Go0Q6v7G1p3OZIoN/aMAYgMYANAagMQCNAWgMQGMAGgPQGIDGADQGoDEAjQFo"
+        "DED7BoxFQgUC1yeEAAAAAElFTkSuQmCC"
+    ),
+}
 
 SAMPLE_CSV_CANDIDATES: List[Path] = [
     Path(__file__).resolve().with_name("sample.csv"),
@@ -29,6 +60,20 @@ SAMPLE_PLAN_CANDIDATES: List[Path] = [
     _REPO_ROOT / "samples" / "plan_news_summarize.json",
     Path(__file__).resolve().parents[1] / "tests" / "assets" / "sample_plan.json",
 ]
+
+IMAGE_SAMPLE_PLAN: Dict[str, Any] = {
+    "dataset": {"kind": "images", "path": "artifacts/bundled_images"},
+    "ops": [
+        {
+            "kind": "img_caption",
+            "params": {"instructions": "用一句中文描述图片内容", "max_tokens": 80},
+        },
+        {
+            "kind": "img_resize",
+            "params": {"width": 384, "height": 384, "keep_ratio": True},
+        },
+    ],
+}
 
 
 st.set_page_config(page_title="VDPT Preview & Execute", layout="wide")
@@ -51,6 +96,10 @@ if "images_dir" not in st.session_state:
     st.session_state.images_dir = ""
 if "selected_images" not in st.session_state:
     st.session_state.selected_images = []
+if "use_bundled_images" not in st.session_state:
+    st.session_state.use_bundled_images = False
+if "previous_images_state" not in st.session_state:
+    st.session_state.previous_images_state = None
 
 
 def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
@@ -58,6 +107,28 @@ def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
         if candidate and candidate.exists():
             return candidate
     return None
+
+
+def _ensure_bundled_images_present() -> None:
+    try:
+        BUNDLED_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        st.warning(f"Unable to create bundled image directory: {exc}")
+        return
+
+    for filename, encoded in _BUNDLED_IMAGE_PAYLOADS.items():
+        target = BUNDLED_IMAGE_DIR / filename
+        if target.exists():
+            continue
+        try:
+            binary = base64.b64decode(encoded)
+        except binascii.Error as exc:
+            st.warning(f"Failed to decode bundled image {filename}: {exc}")
+            continue
+        try:
+            target.write_bytes(binary)
+        except OSError as exc:
+            st.warning(f"Failed to write bundled image {filename}: {exc}")
 
 
 def _load_sample_plan() -> Optional[Dict[str, Any]]:
@@ -104,6 +175,58 @@ def _load_sample_plan() -> Optional[Dict[str, Any]]:
     return {"ops": ops, "dataset": dataset}
 
 
+def _list_bundled_images() -> List[Path]:
+    _ensure_bundled_images_present()
+    if not BUNDLED_IMAGE_DIR.exists():
+        return []
+
+    supported_suffixes = {".png", ".jpg", ".jpeg"}
+    candidates = [
+        path
+        for path in BUNDLED_IMAGE_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in supported_suffixes
+    ]
+    return sorted(candidates, key=lambda item: item.name.lower())
+
+
+def _enable_bundled_images(*, remember_previous: bool = True) -> bool:
+    bundled = _list_bundled_images()
+    if not bundled:
+        return False
+
+    if remember_previous:
+        st.session_state.previous_images_state = {
+            "images_dir": st.session_state.get("images_dir", ""),
+            "selected_images": list(st.session_state.get("selected_images", [])),
+            "sample_size": int(st.session_state.get("sample_size", 1) or 1),
+        }
+
+    st.session_state.images_dir = str(BUNDLED_IMAGE_DIR.resolve())
+    st.session_state.selected_images = [path.name for path in bundled]
+
+    current_size = int(st.session_state.get("sample_size", 1) or 1)
+    st.session_state.sample_size = min(max(1, current_size), len(bundled))
+    st.session_state.use_bundled_images = True
+    return True
+
+
+def _disable_bundled_images() -> None:
+    previous = st.session_state.get("previous_images_state")
+    if isinstance(previous, dict):
+        st.session_state.images_dir = previous.get("images_dir", "")
+        st.session_state.selected_images = list(previous.get("selected_images", []))
+        try:
+            restored_size = int(previous.get("sample_size", st.session_state.sample_size))
+            st.session_state.sample_size = max(1, restored_size)
+        except (TypeError, ValueError):
+            st.session_state.sample_size = max(1, st.session_state.sample_size)
+    else:
+        st.session_state.images_dir = ""
+        st.session_state.selected_images = []
+    st.session_state.use_bundled_images = False
+    st.session_state.previous_images_state = None
+
+
 def _persist_uploaded_file(upload) -> Optional[Path]:
     if upload is None:
         return None
@@ -134,6 +257,9 @@ def _persist_uploaded_images(uploads) -> List[Path]:
     saved: List[Path] = []
     if not uploads:
         return saved
+
+    if st.session_state.get("use_bundled_images"):
+        _disable_bundled_images()
 
     images_dir = _ensure_images_dir()
 
@@ -185,21 +311,56 @@ def _format_size(num_bytes: int) -> str:
     return f"{size:.1f} B"
 
 
-def _build_image_preview_table(records: List[Dict[str, Any]]) -> pd.DataFrame:
-    rows: List[Dict[str, Any]] = []
-    for record in records:
-        image_path = Path(str(record.get("image_path", "")))
-        filename = image_path.name if image_path.name else str(image_path)
-        row: Dict[str, Any] = {"filename": filename}
-        for key, value in record.items():
-            if key == "image_path":
-                continue
-            row[key] = value
-        rows.append(row)
+def _render_image_preview_table(records: List[Dict[str, Any]], ops: List[Dict[str, Any]]) -> None:
+    if not records:
+        st.info("No preview records to display.")
+        return
 
-    if rows:
-        return pd.DataFrame(rows)
-    return pd.DataFrame(columns=["filename"])
+    has_caption = any((op.get("kind") == "img_caption") for op in ops)
+    has_resize = any((op.get("kind") == "img_resize") for op in ops)
+
+    column_labels: List[str] = ["Thumb", "Filename"]
+    column_weights: List[int] = [1, 3]
+    if has_caption:
+        column_labels.append("Caption")
+        column_weights.append(4)
+    if has_resize:
+        column_labels.append("Resized path")
+        column_weights.append(4)
+
+    container = st.container()
+    header_cols = container.columns(column_weights)
+    for col, label in zip(header_cols, column_labels):
+        col.markdown(f"**{label}**")
+
+    for record in records:
+        row_cols = container.columns(column_weights)
+        image_value = record.get("image_path")
+        image_path = Path(str(image_value)) if image_value else None
+        if image_path and image_path.exists():
+            row_cols[0].image(str(image_path), width=64)
+        elif image_path:
+            row_cols[0].markdown(f"`{image_path}`")
+        else:
+            row_cols[0].markdown("—")
+
+        filename = image_path.name if image_path and image_path.name else str(image_path or "")
+        row_cols[1].write(filename or "—")
+
+        next_col = 2
+        if has_caption:
+            caption_value = record.get("caption")
+            if caption_value:
+                row_cols[next_col].write(caption_value)
+            else:
+                row_cols[next_col].markdown("—")
+            next_col += 1
+        if has_resize:
+            resized_value = record.get("resized_path")
+            if resized_value:
+                row_cols[next_col].code(str(resized_value), language="plain")
+            else:
+                row_cols[next_col].markdown("—")
 
 
 def _render_image_gallery(paths: List[Path], columns: int = 3) -> None:
@@ -517,11 +678,55 @@ else:
             if rel_str not in st.session_state.selected_images:
                 st.session_state.selected_images.append(rel_str)
 
-    use_sample_images = st.sidebar.checkbox("Use bundled sample images")
-    if st.sidebar.button("Load sample plan (images)"):
-        st.sidebar.info("Sample plan loading for images will be available in a future update.")
-    if use_sample_images:
-        st.sidebar.caption("Bundled sample images are not yet available.")
+    bundled_images = _list_bundled_images()
+    bundled_available = bool(bundled_images)
+    if st.session_state.use_bundled_images and not bundled_available:
+        _disable_bundled_images()
+        bundled_available = False
+
+    checkbox_value = st.sidebar.checkbox(
+        "Use bundled sample images",
+        value=st.session_state.use_bundled_images if bundled_available else False,
+        disabled=not bundled_available,
+    )
+
+    if checkbox_value != st.session_state.use_bundled_images:
+        if checkbox_value:
+            if _enable_bundled_images(
+                remember_previous=not st.session_state.use_bundled_images
+            ):
+                st.sidebar.success("Bundled sample images loaded.")
+            else:
+                st.sidebar.warning(
+                    "Bundled sample images are unavailable."
+                )
+                st.session_state.use_bundled_images = False
+        else:
+            _disable_bundled_images()
+
+    if bundled_available:
+        st.sidebar.caption(
+            f"{len(bundled_images)} bundled image(s) in {BUNDLED_IMAGE_DIR}"
+        )
+    else:
+        st.sidebar.caption(f"No bundled images found in {BUNDLED_IMAGE_DIR}")
+
+    if st.sidebar.button("Load sample plan (images)", disabled=not bundled_available):
+        activated = _enable_bundled_images(
+            remember_previous=not st.session_state.use_bundled_images
+        )
+        if not activated:
+            st.sidebar.warning("Bundled sample images are unavailable.")
+        else:
+            plan_copy = deepcopy(IMAGE_SAMPLE_PLAN)
+            st.session_state.plan_ops = plan_copy.get("ops", [])  # type: ignore[assignment]
+            st.session_state.images_dir = str(BUNDLED_IMAGE_DIR.resolve())
+            st.session_state.selected_images = [path.name for path in bundled_images]
+            st.session_state.sample_size = min(len(bundled_images), 3) or 1
+            st.session_state.preview_result = None
+            st.session_state.execute_result = None
+            st.session_state.use_bundled_images = True
+            st.sidebar.success("Sample image plan loaded.")
 
     image_paths = _resolve_selected_image_paths()
     images_dir_display = st.session_state.images_dir
@@ -835,7 +1040,7 @@ with main_col:
         records = preview.get("records") or []
         if records:
             if dataset_kind == "images":
-                st.dataframe(_build_image_preview_table(records))
+                _render_image_preview_table(records, st.session_state.plan_ops)
             else:
                 st.dataframe(pd.DataFrame(records))
         else:
