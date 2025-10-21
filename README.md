@@ -105,6 +105,7 @@ tests/             # Pytest-based automated tests
 
 - The API stores data in memory to keep the MVP lightweight. Persistence can be added later.
 - See [`SANITY.md`](SANITY.md) for manual verification steps.
+- See [`SANITY_IMAGE.md`](SANITY_IMAGE.md) for a full image workflow walkthrough.
 
 ## Real-ish Preview Examples
 
