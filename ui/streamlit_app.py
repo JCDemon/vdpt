@@ -62,7 +62,7 @@ SAMPLE_PLAN_CANDIDATES: List[Path] = [
 ]
 
 IMAGE_SAMPLE_PLAN: Dict[str, Any] = {
-    "dataset": {"kind": "images", "path": "artifacts/bundled_images"},
+    "dataset": {"type": "images", "path": "artifacts/bundled_images"},
     "ops": [
         {
             "kind": "img_caption",
@@ -373,7 +373,29 @@ def _render_image_gallery(paths: List[Path], columns: int = 3) -> None:
         grid = st.columns(len(row_paths))
         for col, path in zip(grid, row_paths):
             with col:
-                st.image(str(path), caption=path.name, use_column_width=True)
+                st.image(str(path), caption=path.name, use_container_width=True)
+
+
+def sample_size_control(label: str, count: int, default: int = 5) -> int:
+    """Return a valid sample size. For count<=1, skip slider and return count."""
+
+    default = min(default, max(count, 1))
+    if count <= 1:
+        st.caption(f"{label}: {count}")
+        return count
+    return st.slider(label, min_value=1, max_value=count, value=default)
+
+
+def build_dataset_payload_csv(csv_path: str) -> Dict[str, Any]:
+    return {"type": "csv", "path": csv_path}
+
+
+def build_dataset_payload_images(images_dir: Path, filenames: list[str]) -> Dict[str, Any]:
+    return {
+        "type": "images",
+        "path": str(images_dir),
+        "paths": [str(Path(name).name) for name in filenames],
+    }
 
 
 def _read_columns(path: str) -> List[str]:
@@ -514,6 +536,7 @@ def _prepare_plan_payload(
     dataset: Optional[Dict[str, Any]],
     *,
     preview: bool = False,
+    limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     plan_ops: List[Dict[str, Any]] = []
     for op in ops:
@@ -579,24 +602,36 @@ def _prepare_plan_payload(
             sanitized = dict(params)
         plan_ops.append({"kind": kind, "params": sanitized})
 
-    plan: Dict[str, Any] = {"ops": plan_ops}
+    payload: Dict[str, Any] = {"operations": plan_ops}
+
+    limit_value: Optional[int]
+    if limit is None:
+        limit_value = None
+    else:
+        try:
+            limit_value = max(0, int(limit))
+        except (TypeError, ValueError):
+            limit_value = 0
+
+    dataset_copy: Optional[Dict[str, Any]] = None
     if dataset:
-        dataset_payload = dict(dataset)
-        if dataset_payload.get("kind") == "images":
-            paths_raw = dataset_payload.get("paths")
-            if isinstance(paths_raw, list):
-                paths_list = list(paths_raw)
-                if preview:
-                    limit = dataset_payload.get("sample_size")
-                    if isinstance(limit, int):
-                        if limit <= 0:
-                            paths_list = []
-                        else:
-                            paths_list = paths_list[: min(limit, len(paths_list))]
-                dataset_payload["paths"] = paths_list
-            dataset_payload.pop("sample_size", None)
-        plan["dataset"] = dataset_payload
-    return plan
+        dataset_copy = dict(dataset)
+        dataset_type = dataset_copy.get("type") or dataset_copy.get("kind")
+        if dataset_copy.get("type") is None and dataset_copy.get("kind") is not None:
+            dataset_copy["type"] = dataset_copy.pop("kind")
+        if "paths" in dataset_copy and isinstance(dataset_copy["paths"], list):
+            dataset_copy["paths"] = list(dataset_copy["paths"])
+            if preview and dataset_type == "images" and limit_value is not None and limit_value > 0:
+                paths_list = dataset_copy["paths"]
+                dataset_copy["paths"] = paths_list[: min(limit_value, len(paths_list))]
+        if "path" in dataset_copy:
+            dataset_copy["path"] = str(dataset_copy["path"])
+        payload["dataset"] = dataset_copy
+
+    if limit_value is not None:
+        payload["limit"] = limit_value
+
+    return payload
 
 
 def _post_json(url: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -673,14 +708,15 @@ if dataset_kind == "csv":
         if sample_plan_data:
             st.session_state.plan_ops = sample_plan_data.get("ops", [])  # type: ignore[assignment]
             dataset = sample_plan_data.get("dataset") or {}
-            sample_size = dataset.get("sample_size")
+            sample_size = sample_plan_data.get("limit", dataset.get("sample_size"))
             if sample_size is not None:
                 try:
                     st.session_state.sample_size = int(sample_size)
                 except (TypeError, ValueError):
                     pass
-            if dataset.get("path"):
-                st.session_state.dataset_path = str(dataset["path"])
+            dataset_path = dataset.get("path")
+            if dataset_path:
+                st.session_state.dataset_path = str(dataset_path)
             st.sidebar.success("Sample plan loaded")
         else:
             st.sidebar.info("No sample plan found")
@@ -782,7 +818,7 @@ else:
     else:
         st.sidebar.info("Upload PNG or JPG files to begin.")
 
-dataset_config: Optional[Dict[str, Any]] = None
+dataset_payload: Optional[Dict[str, Any]] = None
 
 main_col, provenance_col = st.columns([3, 1.2])
 
@@ -805,48 +841,37 @@ with main_col:
         else:
             st.warning("Upload one or more images to build a plan.")
 
-    max_preview_rows = 50
-    if dataset_kind == "csv" and current_dataset_path:
-        try:
-            row_count = (
-                sum(
-                    1
-                    for _ in Path(current_dataset_path).open("r", encoding="utf-8", errors="ignore")
+    if dataset_kind == "csv":
+        csv_count = 0
+        if current_dataset_path:
+            max_preview_rows = 50
+            try:
+                row_count = (
+                    sum(
+                        1
+                        for _ in Path(current_dataset_path).open(
+                            "r", encoding="utf-8", errors="ignore"
+                        )
+                    )
+                    - 1
                 )
-                - 1
-            )
+            except Exception:
+                row_count = 0
             if row_count > 0:
-                max_preview_rows = min(max_preview_rows, row_count)
-        except Exception:
-            pass
-    elif dataset_kind == "images":
-        max_preview_rows = len(image_paths) if image_paths else 1
-
-    slider_max = max_preview_rows if max_preview_rows >= 1 else 1
-    slider_value = min(st.session_state.sample_size, slider_max)
-    st.session_state.sample_size = st.slider(
-        "Preview sample size",
-        min_value=1,
-        max_value=slider_max,
-        value=slider_value if slider_value >= 1 else 1,
-        step=1,
-    )
+                csv_count = min(max_preview_rows, row_count)
+        st.session_state.sample_size = sample_size_control("Preview sample size", csv_count)
+    else:
+        img_count = len(image_paths)
+        st.session_state.sample_size = sample_size_control("Preview sample size", img_count)
 
     if dataset_kind == "csv" and current_dataset_path:
-        dataset_config = {
-            "kind": "csv",
-            "path": current_dataset_path,
-            "sample_size": st.session_state.sample_size,
-        }
+        dataset_payload = build_dataset_payload_csv(current_dataset_path)
     elif dataset_kind == "images" and image_paths:
         images_dir_str = st.session_state.images_dir
         images_dir_path = Path(images_dir_str) if images_dir_str else image_paths[0].parent
-        dataset_config = {
-            "kind": "images",
-            "path": str(images_dir_path.resolve()),
-            "paths": list(st.session_state.selected_images),
-            "sample_size": st.session_state.sample_size,
-        }
+        dataset_payload = build_dataset_payload_images(
+            images_dir_path.resolve(), list(st.session_state.selected_images)
+        )
 
     st.markdown("### Operations")
     available_kinds = (
@@ -1013,10 +1038,11 @@ with main_col:
         st.session_state.plan_ops.append({"kind": add_kind, "params": new_params})
         st.experimental_rerun()
 
-    if dataset_config is not None:
+    if dataset_payload is not None:
         debug_plan_payload = _prepare_plan_payload(
             st.session_state.plan_ops,
-            dataset_config,
+            dataset_payload,
+            limit=st.session_state.sample_size,
         )
         with st.expander("Debug: request payload", expanded=False):
             st.json(debug_plan_payload)
@@ -1054,13 +1080,14 @@ with main_col:
     )
 
     if preview_clicked:
-        if dataset_config is None:
+        if dataset_payload is None:
             st.error(preview_error)
         else:
             plan_payload = _prepare_plan_payload(
                 st.session_state.plan_ops,
-                dataset_config,
+                dataset_payload,
                 preview=True,
+                limit=st.session_state.sample_size,
             )
             url = f"{backend_url.rstrip('/')}/preview"
             result = _post_json(url, plan_payload)
@@ -1069,12 +1096,13 @@ with main_col:
                 st.session_state.execute_result = None
 
     if execute_clicked:
-        if dataset_config is None:
+        if dataset_payload is None:
             st.error(execute_error)
         else:
             plan_payload = _prepare_plan_payload(
                 st.session_state.plan_ops,
-                dataset_config,
+                dataset_payload,
+                limit=st.session_state.sample_size,
             )
             url = f"{backend_url.rstrip('/')}/execute"
             result = _post_json(url, plan_payload)
