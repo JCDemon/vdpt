@@ -66,6 +66,18 @@ export DASHSCOPE_API_KEY="***"
 
 If the variable is not set, the app automatically falls back to the deterministic `MockProvider` for offline demos.
 
+## Image caption provider (Qwen-VL)
+
+```bash
+export VDPT_PROVIDER=qwen
+export DASHSCOPE_API_KEY="your_dashscope_key_here"
+# optional: override the default vision model
+export VDPT_QWEN_VL_MODEL=qwen-vl-plus
+```
+
+If `VDPT_PROVIDER` is not set to `qwen` **or** the API key is missing, image caption operations fall back to returning a mock
+`[mock] ... 的简要描述` string for local demos.
+
 ## Run the UI
 
 ```bash
