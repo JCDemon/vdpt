@@ -1113,9 +1113,7 @@ with main_col:
                     st.toast(f"Copied run directory path: {run_dir_str}")
                 if run_dir.exists():
                     try:
-                        run_cols[0].markdown(
-                            f"[Open folder]({run_dir.resolve().as_uri()})"
-                        )
+                        run_cols[0].markdown(f"[Open folder]({run_dir.resolve().as_uri()})")
                     except ValueError:
                         pass
         elif run_dir:
