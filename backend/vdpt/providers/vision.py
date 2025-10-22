@@ -95,7 +95,8 @@ def available_vision_providers() -> Iterable[str]:
 def create_vision_provider(name: str | None = None) -> VisionProvider:
     """Instantiate a vision provider by name or from the environment."""
 
-    provider_name = (name or os.getenv("VDPT_VISION_PROVIDER") or _DEFAULT_PROVIDER).strip().lower()
+    env_name = name or os.getenv("VDPT_VISION_PROVIDER") or os.getenv("VDPT_PROVIDER")
+    provider_name = (env_name or _DEFAULT_PROVIDER).strip().lower()
     try:
         factory = _PROVIDERS[provider_name]
     except KeyError as exc:  # pragma: no cover - defensive guard
@@ -124,4 +125,3 @@ def reset_vision_provider_cache() -> None:
 
 # Register built-in providers.
 register_vision_provider("mock", MockVisionProvider)
-register_vision_provider("qwen_vl", lambda: _UnimplementedVisionProvider("qwen_vl"))

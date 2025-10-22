@@ -2,7 +2,7 @@
 
 from .base import TextLLMProvider
 from .mock import MockProvider
-from .qwen import QwenProvider
+from .qwen import QwenProvider, QwenVisionProvider
 from .vision import (
     MockVisionProvider,
     VisionProvider,
@@ -19,6 +19,7 @@ __all__ = [
     "QwenProvider",
     "VisionProvider",
     "MockVisionProvider",
+    "QwenVisionProvider",
     "available_vision_providers",
     "create_vision_provider",
     "get_vision_provider",
