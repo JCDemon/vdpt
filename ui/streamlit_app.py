@@ -62,7 +62,11 @@ SAMPLE_PLAN_CANDIDATES: List[Path] = [
 ]
 
 IMAGE_SAMPLE_PLAN: Dict[str, Any] = {
-    "dataset": {"type": "images", "path": "artifacts/bundled_images"},
+    "dataset": {
+        "type": "images",
+        "path": str(BUNDLED_IMAGE_DIR.resolve()),
+        "paths": sorted(_BUNDLED_IMAGE_PAYLOADS.keys()),
+    },
     "ops": [
         {
             "kind": "img_caption",
@@ -391,9 +395,14 @@ def build_dataset_payload_csv(csv_path: str) -> Dict[str, Any]:
 
 
 def build_dataset_payload_images(images_dir: Path, filenames: list[str]) -> Dict[str, Any]:
+    try:
+        resolved_dir = images_dir.resolve()
+    except OSError:
+        resolved_dir = images_dir if images_dir.is_absolute() else images_dir.absolute()
+
     return {
         "type": "images",
-        "path": str(images_dir),
+        "path": str(resolved_dir),
         "paths": [str(Path(name).name) for name in filenames],
     }
 
