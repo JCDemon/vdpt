@@ -8,7 +8,7 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Mapping
 
 import pandas as pd
 import requests
@@ -745,17 +745,26 @@ def _fetch_provenance(url: str) -> Dict[str, Dict[str, float]]:
     return {}
 
 
-def _extract_operation_metrics(metrics: Dict[str, float]) -> Dict[str, float]:
+def _extract_operation_metrics(metrics: Mapping[Any, Any]) -> Dict[str, float]:
     operations: Dict[str, float] = {}
-    for key, value in metrics.items():
-        if not isinstance(key, str):
+    for raw_key, raw_value in metrics.items():
+        if not isinstance(raw_key, str):
             continue
-        prefix, _, suffix = key.partition(":")
-        if prefix != "op" or not suffix:
+
+        normalized_key = raw_key
+        if raw_key.startswith("op:"):
+            _, _, suffix = raw_key.partition(":")
+            if suffix:
+                normalized_key = suffix
+
+        try:
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError):
             continue
-        existing = operations.get(suffix)
-        if existing is None or value > existing:
-            operations[suffix] = value
+
+        existing = operations.get(normalized_key)
+        if existing is None or numeric_value > existing:
+            operations[normalized_key] = numeric_value
     return operations
 
 
