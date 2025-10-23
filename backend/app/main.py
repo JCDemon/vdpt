@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..schemas import TodoCreate, TodoRead
 from ..vdpt.io import read_csv, sha256_bytes, write_csv
-from ..vdpt.providers import MockProvider, QwenProvider, TextLLMProvider
+from ..vdpt.providers import MockProvider, QwenProvider, TextLLMProvider, get_vision_provider
 from ..services import TodoService
 from .preview.preview_engine import (
     preview_classify,
@@ -214,7 +214,9 @@ def _preview_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
 
     image_paths = _resolve_image_paths(dataset)
     sample_paths = _sample_image_paths(image_paths, dataset)
-    preview_dir = _create_preview_tmp_dir()
+    run_dir = _create_artifact_dir()
+    preview_dir = run_dir / "preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
 
     records: List[Dict[str, Any]] = []
     new_columns: Dict[str, Dict[str, Any]] = {}
@@ -248,12 +250,30 @@ def _preview_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
 
     new_column_list = [new_columns[name] for name in sorted(new_columns)]
 
-    return {
+    result = {
         "records": records,
         "schema": {"new_columns": new_column_list},
         "preview_sample_size": len(records),
         "summary": f"preview generated for {len(records)} image(s)",
     }
+
+    captions_path = run_dir / "captions.json"
+    captions_entries = _collect_image_captions(records)
+    captions_path.write_text(json.dumps(captions_entries, ensure_ascii=False, indent=2))
+
+    metadata_payload = _build_image_metadata(plan, dataset, sample_paths)
+    metadata_payload["preview_sample_size"] = len(records)
+    metadata_payload["record_count"] = len(records)
+    metadata_payload["artifacts"] = {"captions": str(captions_path)}
+    metadata_path = run_dir / "metadata.json"
+    metadata_path.write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2))
+
+    result["artifacts"] = {
+        "captions": str(captions_path),
+        "metadata": str(metadata_path),
+    }
+
+    return result
 
 
 def _execute_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
@@ -307,26 +327,37 @@ def _execute_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
     preview_path = artifacts_dir / "preview.json"
     preview_path.write_text(json.dumps(preview_payload, indent=2))
 
+    captions_path = artifacts_dir / "captions.json"
+    captions_entries = _collect_image_captions(records)
+    captions_path.write_text(json.dumps(captions_entries, ensure_ascii=False, indent=2))
+
+    generated_list = sorted(generated_files)
+
     metadata_path = artifacts_dir / "metadata.json"
+    metadata_artifacts: Dict[str, Any] = {
+        "output_csv": str(output_path),
+        "preview_json": str(preview_path),
+        "captions": str(captions_path),
+        "generated": generated_list,
+    }
     metadata = {
         "plan": plan.model_dump(),
-        "artifacts": {
-            "output_csv": str(output_path),
-            "preview_json": str(preview_path),
-            "generated": sorted(generated_files),
-        },
+        "artifacts": metadata_artifacts,
         "preview_sample_size": preview_payload.get("preview_sample_size"),
         "source_images": [str(path) for path in image_paths],
     }
-    metadata_path.write_text(json.dumps(metadata, indent=2))
+    metadata.update(_build_image_metadata(plan, dataset, image_paths))
+    metadata["record_count"] = len(records)
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
 
     artifacts_payload: Dict[str, Any] = {
         "output_csv": str(output_path),
         "metadata": str(metadata_path),
         "preview": str(preview_path),
+        "captions": str(captions_path),
     }
     if generated_files:
-        artifacts_payload["generated"] = sorted(generated_files)
+        artifacts_payload["generated"] = generated_list
 
     return {
         "ok": True,
@@ -418,13 +449,75 @@ def _sample_image_paths(paths: Sequence[Path], dataset: ImageDataset) -> List[Pa
     return all_paths[:sample_size]
 
 
-def _create_preview_tmp_dir() -> Path:
-    timestamp = datetime.now(UTC).strftime("preview-%Y%m%d-%H%M%S-%f")
-    base_dir = Path("artifacts") / "tmp"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir = base_dir / timestamp
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    return tmp_dir
+def _collect_image_captions(records: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
+    entries: List[Dict[str, str]] = []
+    for record in records:
+        image_path = record.get("image_path")
+        caption = record.get("caption")
+        if not image_path or caption is None:
+            continue
+        entries.append(
+            {
+                "file": Path(str(image_path)).name,
+                "caption": str(caption),
+            }
+        )
+    return entries
+
+
+def _image_dataset_input_dir(dataset: ImageDataset) -> Optional[str]:
+    if dataset.path:
+        base_dir = Path(dataset.path).expanduser()
+        if not base_dir.is_absolute():
+            base_dir = (Path.cwd() / base_dir).resolve()
+        else:
+            base_dir = base_dir.resolve()
+        return str(base_dir)
+    if dataset.session:
+        base_dir = Path("artifacts") / "uploads" / dataset.session
+        return str(base_dir.resolve())
+    return None
+
+
+def _image_provider_details() -> tuple[str, str]:
+    provider_name = (
+        os.getenv("VDPT_VISION_PROVIDER")
+        or os.getenv("VDPT_PROVIDER")
+        or "mock"
+    ).strip().lower()
+    provider = get_vision_provider()
+    model_value = getattr(provider, "model", None) or getattr(provider, "_model", None)
+    if not model_value:
+        model_value = provider_name
+    return provider_name, str(model_value)
+
+
+def _build_image_metadata(
+    plan: Plan, dataset: ImageDataset, file_paths: Sequence[Path]
+) -> Dict[str, Any]:
+    provider_name, provider_model = _image_provider_details()
+    files: List[str] = []
+    seen: set[str] = set()
+    for file_path in file_paths:
+        name = Path(file_path).name
+        if name in seen:
+            continue
+        seen.add(name)
+        files.append(name)
+
+    args_payload = {
+        "dataset": dataset.model_dump(),
+        "ops": [op.model_dump() for op in plan.ops],
+    }
+
+    return {
+        "input_dir": _image_dataset_input_dir(dataset),
+        "files": files,
+        "provider": provider_name,
+        "model": provider_model,
+        "time": datetime.now(UTC).isoformat(),
+        "args": args_payload,
+    }
 
 
 def _apply_tabular_ops(
