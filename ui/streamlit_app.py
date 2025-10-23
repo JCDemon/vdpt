@@ -104,6 +104,14 @@ if "use_bundled_images" not in st.session_state:
     st.session_state.use_bundled_images = False
 if "previous_images_state" not in st.session_state:
     st.session_state.previous_images_state = None
+if "prov_counts" not in st.session_state:
+    st.session_state.prov_counts = {}  # type: ignore[attr-defined]
+if "prov_history" not in st.session_state:
+    st.session_state.prov_history = []  # type: ignore[attr-defined]
+if "provenance_freq_items" not in st.session_state:
+    st.session_state.provenance_freq_items = []  # type: ignore[attr-defined]
+if "provenance_recency_items" not in st.session_state:
+    st.session_state.provenance_recency_items = []  # type: ignore[attr-defined]
 
 
 def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
@@ -540,6 +548,54 @@ def _extract_run_directory(artifacts: Dict[str, Any]) -> Optional[Path]:
     return None
 
 
+# --- helpers: artifacts ---
+
+
+def _read_bytes_safe(p: Path) -> bytes | None:
+    try:
+        return p.read_bytes()
+    except Exception:
+        return None
+
+
+def render_artifact(label: str, rel_path: str):
+    """Show an artifact row with a copyable path and a download button if readable."""
+    import streamlit as st
+
+    p = Path(rel_path)
+    st.write(f"**{label}**")
+    st.code(str(p), language="text")
+    data = _read_bytes_safe(p)
+    if data is not None:
+        mime = "application/json" if p.suffix.lower() == ".json" else "text/plain"
+        st.download_button(
+            label=f"Download {p.name}",
+            data=data,
+            file_name=p.name,
+            mime=mime,
+            use_container_width=True,
+            key=f"dl-{label}-{p.name}",
+        )
+    else:
+        st.info("Artifact not readable from UI process; path is shown for reference.")
+
+
+def render_artifacts_section(resp_json: Any) -> None:
+    arts = resp_json.get("artifacts") if isinstance(resp_json, dict) else None
+    if not arts:
+        return
+
+    st.subheader("Artifacts")
+    for key in ("captions", "metadata", "output_csv", "preview"):
+        if key in arts and arts[key]:
+            render_artifact(key, arts[key])
+    for key, val in arts.items():
+        if key in ("captions", "metadata", "output_csv", "preview"):
+            continue
+        if isinstance(val, str):
+            render_artifact(key, val)
+
+
 def _prepare_plan_payload(
     ops: List[Dict[str, Any]],
     dataset: Optional[Dict[str, Any]],
@@ -675,6 +731,29 @@ def _fetch_provenance(url: str) -> Dict[str, Dict[str, float]]:
     except json.JSONDecodeError:
         st.warning("Provenance endpoint returned invalid JSON")
     return {}
+
+
+def update_provenance_charts(counts: Dict[str, int]) -> None:
+    filtered = [(str(kind), int(value)) for kind, value in counts.items() if int(value) > 0]
+    filtered.sort(key=lambda item: item[1], reverse=True)
+    st.session_state.provenance_freq_items = filtered[:TOP_K_PROVENANCE]
+
+    history = st.session_state.get("prov_history") or []
+    recency_scores: Dict[str, int] = {}
+    if history:
+        total = len(history)
+        for offset, kind in enumerate(reversed(history)):
+            score = total - offset
+            existing = recency_scores.get(kind, 0)
+            if score > existing:
+                recency_scores[kind] = score
+
+    recency_items = sorted(
+        ((str(kind), int(score)) for kind, score in recency_scores.items()),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:TOP_K_PROVENANCE]
+    st.session_state.provenance_recency_items = recency_items
 
 
 st.sidebar.header("Configuration")
@@ -1092,31 +1171,57 @@ with main_col:
         if dataset_payload is None:
             st.error(preview_error)
         else:
-            plan_payload = _prepare_plan_payload(
+            req_body = _prepare_plan_payload(
                 st.session_state.plan_ops,
                 dataset_payload,
                 preview=True,
                 limit=st.session_state.sample_size,
             )
             url = f"{backend_url.rstrip('/')}/preview"
-            result = _post_json(url, plan_payload)
+            result = _post_json(url, req_body)
             if result is not None:
                 st.session_state.preview_result = result
                 st.session_state.execute_result = None
+                ops = req_body.get("operations", [])
+                if "prov_counts" not in st.session_state:
+                    st.session_state.prov_counts = {}
+                if "prov_history" not in st.session_state:
+                    st.session_state.prov_history = []
+                for op in ops:
+                    kind = op.get("kind")
+                    if kind:
+                        st.session_state.prov_counts[kind] = (
+                            st.session_state.prov_counts.get(kind, 0) + 1
+                        )
+                        st.session_state.prov_history.append(kind)
+                update_provenance_charts(st.session_state.prov_counts)
 
     if execute_clicked:
         if dataset_payload is None:
             st.error(execute_error)
         else:
-            plan_payload = _prepare_plan_payload(
+            req_body = _prepare_plan_payload(
                 st.session_state.plan_ops,
                 dataset_payload,
                 limit=st.session_state.sample_size,
             )
             url = f"{backend_url.rstrip('/')}/execute"
-            result = _post_json(url, plan_payload)
+            result = _post_json(url, req_body)
             if result is not None:
                 st.session_state.execute_result = result
+                ops = req_body.get("operations", [])
+                if "prov_counts" not in st.session_state:
+                    st.session_state.prov_counts = {}
+                if "prov_history" not in st.session_state:
+                    st.session_state.prov_history = []
+                for op in ops:
+                    kind = op.get("kind")
+                    if kind:
+                        st.session_state.prov_counts[kind] = (
+                            st.session_state.prov_counts.get(kind, 0) + 1
+                        )
+                        st.session_state.prov_history.append(kind)
+                update_provenance_charts(st.session_state.prov_counts)
 
     if st.session_state.preview_result:
         st.markdown("### Preview output")
@@ -1132,6 +1237,8 @@ with main_col:
         schema = preview.get("schema")
         if schema:
             st.json(schema)
+        st.json(preview)
+        render_artifacts_section(preview)
 
     if st.session_state.execute_result:
         st.markdown("### Execution results")
@@ -1156,53 +1263,49 @@ with main_col:
         elif run_dir:
             st.info(f"Artifacts saved under {run_dir}")
 
-        if artifacts:
-            st.markdown("#### Artifacts")
-            for name, value in artifacts.items():
-                if isinstance(value, list):
-                    for item in value:
-                        st.write(f"{name}: {item}")
-                else:
-                    st.write(f"{name}: {value}")
-            output_csv = artifacts.get("output_csv")
-            if output_csv:
-                try:
-                    csv_path = Path(output_csv)
-                    if csv_path.exists():
-                        st.download_button(
-                            "Download output CSV",
-                            data=csv_path.read_bytes(),
-                            file_name=csv_path.name,
-                            mime="text/csv",
-                        )
-                except OSError as exc:
-                    st.warning(f"Unable to load CSV for download: {exc}")
         st.json(result)
+        render_artifacts_section(result)
 
 with provenance_col:
     st.subheader("Provenance")
-    provenance_url = f"{backend_url.rstrip('/')}/provenance/snapshot"
-    provenance_data = _fetch_provenance(provenance_url)
-    if not provenance_data:
-        st.info("No provenance data available yet.")
-    else:
-        frequency = provenance_data.get("frequency") or {}
-        recency = provenance_data.get("recency") or {}
-        if frequency:
-            freq_items = sorted(frequency.items(), key=lambda item: item[1], reverse=True)[
-                :TOP_K_PROVENANCE
-            ]
-            freq_df = pd.DataFrame(
-                freq_items, columns=["operation", "normalized_frequency"]
-            ).set_index("operation")
+    freq_items = st.session_state.get("provenance_freq_items") or []
+    recency_items = st.session_state.get("provenance_recency_items") or []
+    if freq_items or recency_items:
+        if freq_items:
+            freq_df = pd.DataFrame(freq_items, columns=["operation", "count"]).set_index(
+                "operation"
+            )
             st.caption("Most frequent operations")
             st.bar_chart(freq_df)
-        if recency:
-            rec_items = sorted(recency.items(), key=lambda item: item[1], reverse=True)[
-                :TOP_K_PROVENANCE
-            ]
-            rec_df = pd.DataFrame(rec_items, columns=["operation", "recency_score"]).set_index(
+        if recency_items:
+            rec_df = pd.DataFrame(recency_items, columns=["operation", "recency_score"]).set_index(
                 "operation"
             )
             st.caption("Most recent operations")
             st.bar_chart(rec_df)
+    else:
+        provenance_url = f"{backend_url.rstrip('/')}/provenance/snapshot"
+        provenance_data = _fetch_provenance(provenance_url)
+        if not provenance_data:
+            st.info("No provenance data available yet.")
+        else:
+            frequency = provenance_data.get("frequency") or {}
+            recency = provenance_data.get("recency") or {}
+            if frequency:
+                freq_items = sorted(frequency.items(), key=lambda item: item[1], reverse=True)[
+                    :TOP_K_PROVENANCE
+                ]
+                freq_df = pd.DataFrame(
+                    freq_items, columns=["operation", "normalized_frequency"]
+                ).set_index("operation")
+                st.caption("Most frequent operations")
+                st.bar_chart(freq_df)
+            if recency:
+                rec_items = sorted(recency.items(), key=lambda item: item[1], reverse=True)[
+                    :TOP_K_PROVENANCE
+                ]
+                rec_df = pd.DataFrame(rec_items, columns=["operation", "recency_score"]).set_index(
+                    "operation"
+                )
+                st.caption("Most recent operations")
+                st.bar_chart(rec_df)
