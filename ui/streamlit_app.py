@@ -380,6 +380,74 @@ def _render_image_gallery(paths: List[Path], columns: int = 3) -> None:
                 st.image(str(path), caption=path.name, use_container_width=True)
 
 
+def _render_captions_artifact(path_value: Any) -> None:
+    if not path_value:
+        return
+
+    path_str = str(path_value)
+    if not path_str:
+        return
+
+    container = st.container()
+    container.markdown("**captions**")
+    columns = container.columns([5, 1])
+
+    path_obj: Optional[Path] = None
+    resolved_path: Optional[Path] = None
+    try:
+        candidate = Path(path_str)
+    except (TypeError, ValueError):
+        candidate = None
+    if candidate is not None:
+        path_obj = candidate
+        try:
+            resolved_path = candidate.resolve()
+        except (OSError, RuntimeError):
+            resolved_path = candidate if candidate.is_absolute() else candidate.absolute()
+
+    link_target: Optional[str] = None
+    if resolved_path is not None:
+        try:
+            link_target = resolved_path.as_uri()
+        except ValueError:
+            link_target = None
+
+    if link_target:
+        columns[0].markdown(f"[{path_str}]({link_target})")
+    else:
+        columns[0].code(path_str, language="bash")
+
+    folder_path: Optional[Path] = None
+    if resolved_path is not None:
+        folder_path = resolved_path.parent
+    elif path_obj is not None:
+        folder_path = path_obj.parent
+
+    folder_uri: Optional[str] = None
+    if folder_path is not None:
+        try:
+            folder_uri = folder_path.as_uri()
+        except ValueError:
+            folder_uri = None
+
+    link_button = getattr(columns[1], "link_button", None)
+    if folder_uri and callable(link_button):
+        try:
+            link_button("Open folder", folder_uri, use_container_width=True)
+        except TypeError:
+            link_button("Open folder", folder_uri)
+    else:
+        display_path = ""
+        if folder_path is not None:
+            try:
+                display_path = str(folder_path.resolve())
+            except (OSError, RuntimeError):
+                display_path = str(folder_path)
+        if not display_path:
+            display_path = path_str
+        columns[1].code(display_path, language="bash")
+
+
 def sample_size_control(label: str, count: int, default: int = 5) -> int:
     """Return a valid sample size. For count<=1, skip slider and return count."""
 
@@ -675,6 +743,20 @@ def _fetch_provenance(url: str) -> Dict[str, Dict[str, float]]:
     except json.JSONDecodeError:
         st.warning("Provenance endpoint returned invalid JSON")
     return {}
+
+
+def _extract_operation_metrics(metrics: Dict[str, float]) -> Dict[str, float]:
+    operations: Dict[str, float] = {}
+    for key, value in metrics.items():
+        if not isinstance(key, str):
+            continue
+        prefix, _, suffix = key.partition(":")
+        if prefix != "op" or not suffix:
+            continue
+        existing = operations.get(suffix)
+        if existing is None or value > existing:
+            operations[suffix] = value
+    return operations
 
 
 st.sidebar.header("Configuration")
@@ -1158,7 +1240,12 @@ with main_col:
 
         if artifacts:
             st.markdown("#### Artifacts")
+            captions_path = artifacts.get("captions")
+            if captions_path:
+                _render_captions_artifact(captions_path)
             for name, value in artifacts.items():
+                if name == "captions":
+                    continue
                 if isinstance(value, list):
                     for item in value:
                         st.write(f"{name}: {item}")
@@ -1188,8 +1275,12 @@ with provenance_col:
     else:
         frequency = provenance_data.get("frequency") or {}
         recency = provenance_data.get("recency") or {}
-        if frequency:
-            freq_items = sorted(frequency.items(), key=lambda item: item[1], reverse=True)[
+        frequency_ops = _extract_operation_metrics(frequency)
+        frequency_source = frequency_ops or frequency
+        if frequency_source:
+            freq_items = sorted(
+                frequency_source.items(), key=lambda item: item[1], reverse=True
+            )[
                 :TOP_K_PROVENANCE
             ]
             freq_df = pd.DataFrame(
@@ -1197,8 +1288,12 @@ with provenance_col:
             ).set_index("operation")
             st.caption("Most frequent operations")
             st.bar_chart(freq_df)
-        if recency:
-            rec_items = sorted(recency.items(), key=lambda item: item[1], reverse=True)[
+        recency_ops = _extract_operation_metrics(recency)
+        recency_source = recency_ops or recency
+        if recency_source:
+            rec_items = sorted(
+                recency_source.items(), key=lambda item: item[1], reverse=True
+            )[
                 :TOP_K_PROVENANCE
             ]
             rec_df = pd.DataFrame(rec_items, columns=["operation", "recency_score"]).set_index(
