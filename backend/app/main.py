@@ -481,10 +481,8 @@ def _image_dataset_input_dir(dataset: ImageDataset) -> Optional[str]:
 
 def _image_provider_details() -> tuple[str, str]:
     provider_name = (
-        os.getenv("VDPT_VISION_PROVIDER")
-        or os.getenv("VDPT_PROVIDER")
-        or "mock"
-    ).strip().lower()
+        (os.getenv("VDPT_VISION_PROVIDER") or os.getenv("VDPT_PROVIDER") or "mock").strip().lower()
+    )
     provider = get_vision_provider()
     model_value = getattr(provider, "model", None) or getattr(provider, "_model", None)
     if not model_value:
