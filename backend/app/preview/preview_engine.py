@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
+import tempfile
 from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Sequence
@@ -52,6 +55,88 @@ def preview_operation(op: dict):
     if kind == "filter":
         return _preview_filter(params)
     return {"note": "stub"}
+
+
+def preview_dataset(
+    dataset_kind: str,
+    records: Sequence[Dict[str, Any]],
+    ops: Sequence[Dict[str, Any]],
+    *,
+    artifacts_dir: Path | str | None = None,
+) -> Dict[str, Any]:
+    """Generate previews for tabular or image datasets with aggregated artifacts."""
+
+    processed_records: List[Dict[str, Any]] = []
+    schema_new_columns: List[str] = []
+    captions: List[str] = []
+
+    for original in records:
+        record = dict(original)
+        errors: List[str] = []
+
+        for op in ops:
+            kind = op.get("kind")
+            params = op.get("params") or {}
+
+            if dataset_kind == "csv" and kind == "summarize":
+                column_name = _resolve_summary_column(params)
+                summary_value = ""
+                try:
+                    op_result = run_operation(record, kind, params)
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append(f"summarize failed: {exc}")
+                else:
+                    if op_result:
+                        summary_value = str(next(iter(op_result.values())))
+                record[column_name] = summary_value
+                if column_name not in schema_new_columns:
+                    schema_new_columns.append(column_name)
+            elif dataset_kind == "images" and kind == "img_caption":
+                caption_value = ""
+                try:
+                    op_result = run_operation(record, kind, params)
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append(f"img_caption failed: {exc}")
+                else:
+                    caption_value = str(op_result.get("caption", ""))
+                record["caption"] = caption_value
+                captions.append(caption_value)
+                if "caption" not in schema_new_columns:
+                    schema_new_columns.append("caption")
+
+        if errors:
+            existing_errors = record.get("error")
+            if isinstance(existing_errors, list):
+                record["error"] = existing_errors + errors
+            elif existing_errors:
+                record["error"] = [existing_errors, *errors]
+            else:
+                record["error"] = errors
+
+        processed_records.append(record)
+
+    artifacts: Dict[str, str] = {"captions": "", "metadata": ""}
+    if captions:
+        target_dir = _ensure_artifact_dir(artifacts_dir)
+        captions_path = target_dir / "captions.json"
+        captions_path.write_text(json.dumps(captions, ensure_ascii=False, indent=2))
+
+        metadata_payload = {
+            "count": len(captions),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        metadata_path = target_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2))
+
+        artifacts["captions"] = str(captions_path)
+        artifacts["metadata"] = str(metadata_path)
+
+    return {
+        "ok": True,
+        "schema": {"new_columns": schema_new_columns},
+        "records": processed_records,
+        "artifacts": artifacts,
+    }
 
 
 def _preview_segment(params: dict) -> dict:
@@ -209,3 +294,19 @@ def preview_classify(
     except Exception as exc:  # pragma: no cover - provider errors
         raise RuntimeError(f"Failed to classify text: {exc}") from exc
     return response.strip() if isinstance(response, str) else ""
+
+
+def _ensure_artifact_dir(artifacts_dir: Path | str | None) -> Path:
+    if artifacts_dir is None:
+        return Path(tempfile.mkdtemp(prefix="preview-artifacts-"))
+    target = Path(artifacts_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _resolve_summary_column(params: Dict[str, Any]) -> str:
+    for key in ("output_field", "output_column", "column_name", "column"):
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return "text_summary"
