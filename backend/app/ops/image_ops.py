@@ -5,8 +5,7 @@ from typing import Any, Dict
 
 from PIL import Image
 
-from ...vdpt.providers import get_vision_provider
-
+from backend.vdpt import providers
 from .base import OperationHandler
 from .registry import register
 
@@ -123,20 +122,13 @@ class ImageCaptionHandler(OperationHandler):
             except (TypeError, ValueError) as exc:
                 raise ValueError("img_caption max_tokens must be an integer") from exc
         else:
-            max_tokens = None
+            max_tokens = 80
 
-        seed_raw = params.get("seed") if params else None
-        if seed_raw is not None:
-            try:
-                seed = int(seed_raw)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("img_caption seed must be an integer") from exc
-        else:
-            seed = None
-
-        provider = get_vision_provider()
-        caption = provider.caption(value, prompt=prompt, max_tokens=max_tokens, seed=seed)
-        return {"caption": caption}
+        kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
+        if prompt is not None:
+            kwargs["prompt"] = prompt
+        caption = providers.current.caption(value, **kwargs)
+        return {"caption": caption or ""}
 
 
 register(ImageResizeHandler())

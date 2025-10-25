@@ -1,12 +1,11 @@
-from backend.vdpt.providers import MockProvider
+from backend.vdpt.providers import mock as mock_provider
 
 
 def test_mock_provider_is_deterministic():
-    provider = MockProvider()
     prompt = "Tell me a story"
 
-    first = provider.generate(prompt)
-    second = provider.generate(prompt)
+    first = mock_provider.chat(prompt)
+    second = mock_provider.chat(prompt)
 
     assert first == second
-    assert first.startswith("[MOCK]")
+    assert first.startswith("[mock-chat]")

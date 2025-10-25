@@ -5,7 +5,6 @@ import pandas as pd
 
 from backend.app.main import Plan, Operation, execute, preview
 from backend.vdpt.io import sha256_bytes
-from backend.vdpt.providers.mock import MockProvider
 
 
 def _make_csv(tmp_path: Path) -> Path:
@@ -47,9 +46,8 @@ def _build_plan(csv_path: Path) -> Plan:
 def test_preview_adds_new_columns(tmp_path):
     csv_path = _make_csv(tmp_path)
     plan = _build_plan(csv_path)
-    provider = MockProvider()
 
-    result = preview(plan, provider=provider)
+    result = preview(plan)
 
     assert result["preview_sample_size"] == 2
     assert len(result["records"]) == 2
@@ -68,9 +66,8 @@ def test_preview_adds_new_columns(tmp_path):
 def test_execute_writes_artifacts(tmp_path):
     csv_path = _make_csv(tmp_path)
     plan = _build_plan(csv_path)
-    provider = MockProvider()
 
-    exec_result = execute(plan, provider=provider)
+    exec_result = execute(plan)
 
     assert exec_result["ok"] is True
     artifacts = exec_result["artifacts"]

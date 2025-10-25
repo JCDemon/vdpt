@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Sequence
 
-from ...vdpt.providers import TextLLMProvider
+from backend.vdpt import providers
 
 import numpy as np
 import pandas as pd
@@ -173,7 +173,6 @@ def _summarize_columns(original: Iterable[str], filtered: Iterable[str]) -> dict
 def preview_summarize(
     text: str,
     params: dict,
-    provider: TextLLMProvider,
 ) -> str:
     """Generate a lightweight summary for preview responses."""
 
@@ -181,16 +180,16 @@ def preview_summarize(
     max_tokens = int(params.get("max_tokens", 128))
     prompt = f"{instructions.strip()}\n\n" "Text:\n" f"{text.strip()}\n" "Summary:"
     try:
-        return provider.generate(prompt, max_tokens=max_tokens).strip()
+        response = providers.current.chat(prompt, max_tokens=max_tokens)
     except Exception as exc:  # pragma: no cover - provider errors
         raise RuntimeError(f"Failed to summarize text: {exc}") from exc
+    return response.strip() if isinstance(response, str) else ""
 
 
 def preview_classify(
     text: str,
     labels: Sequence[str],
     params: dict,
-    provider: TextLLMProvider,
 ) -> str:
     """Classify text into one of the provided labels for preview output."""
 
@@ -206,6 +205,7 @@ def preview_classify(
         "Label:"
     )
     try:
-        return provider.generate(prompt, max_tokens=max_tokens).strip()
+        response = providers.current.chat(prompt, max_tokens=max_tokens)
     except Exception as exc:  # pragma: no cover - provider errors
         raise RuntimeError(f"Failed to classify text: {exc}") from exc
+    return response.strip() if isinstance(response, str) else ""
