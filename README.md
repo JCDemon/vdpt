@@ -58,25 +58,21 @@ pre-commit run --all-files
 ```
 
 
-## Text model provider (Qwen/Mock)
+## Providers
 
-```bash
-export DASHSCOPE_API_KEY="***"
-```
-
-If the variable is not set, the app automatically falls back to the deterministic `MockProvider` for offline demos.
-
-## Image caption provider (Qwen-VL)
+VDPT can call DashScope's Qwen models for both text and vision operations. Configure the provider with the following
+environment variables:
 
 ```bash
 export VDPT_PROVIDER=qwen
 export DASHSCOPE_API_KEY="your_dashscope_key_here"
-# optional: override the default vision model
-export VDPT_QWEN_VL_MODEL=qwen-vl-plus
+# optional: return deterministic mock responses instead of calling DashScope
+export VDPT_MOCK=1
 ```
 
-If `VDPT_PROVIDER` is not set to `qwen` **or** the API key is missing, image caption operations fall back to returning a mock
-`[mock] ... 的简要描述` string for local demos.
+When `VDPT_MOCK` is enabled, both chat and caption requests return short deterministic placeholders so you can preview
+flows without network access. Unsetting `DASHSCOPE_API_KEY` while keeping the Qwen provider active raises a clear error
+at runtime to highlight the missing configuration.
 
 ## Run the UI
 
@@ -102,7 +98,7 @@ With the backend and Streamlit UI running:
 
 ## Troubleshooting
 
-- If `DASHSCOPE_API_KEY` is unset, the app automatically falls back to the deterministic `MockProvider`.
+- Set `VDPT_MOCK=1` to exercise preview flows without making external API calls.
 
 ## Project layout
 

@@ -2,24 +2,28 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+import logging
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Sequence
 
-from backend.vdpt import providers
-
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw
+
+from backend.vdpt import providers
 
 from ..ops.registry import get_handler
 
 # Ensure operation handlers register themselves on import.
 from ..ops import image_ops as _image_ops  # noqa: F401
 from ..ops.text import summarize as _text_summarize  # noqa: F401
+
+
+logger = logging.getLogger(__name__)
 
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "tests" / "assets"
@@ -84,6 +88,7 @@ def preview_dataset(
                 try:
                     op_result = run_operation(record, kind, params)
                 except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("summarize preview failed for column '%s'", column_name)
                     errors.append(f"summarize failed: {exc}")
                 else:
                     if op_result:
@@ -96,6 +101,9 @@ def preview_dataset(
                 try:
                     op_result = run_operation(record, kind, params)
                 except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception(
+                        "image caption preview failed for record '%s'", record.get("id")
+                    )
                     errors.append(f"img_caption failed: {exc}")
                 else:
                     caption_value = str(op_result.get("caption", ""))
@@ -104,14 +112,14 @@ def preview_dataset(
                 if "caption" not in schema_new_columns:
                     schema_new_columns.append("caption")
 
-        if errors:
-            existing_errors = record.get("error")
-            if isinstance(existing_errors, list):
-                record["error"] = existing_errors + errors
-            elif existing_errors:
-                record["error"] = [existing_errors, *errors]
-            else:
-                record["error"] = errors
+        existing_errors = record.get("error")
+        merged_errors: List[str] = []
+        if isinstance(existing_errors, list):
+            merged_errors.extend(str(err) for err in existing_errors)
+        elif existing_errors:
+            merged_errors.append(str(existing_errors))
+        merged_errors.extend(errors)
+        record["error"] = merged_errors
 
         processed_records.append(record)
 
