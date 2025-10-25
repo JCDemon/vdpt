@@ -1,19 +1,44 @@
-"""Mock text generation provider for offline testing."""
+"""Mock provider implementation for tests and offline usage."""
 
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from pathlib import Path
+from typing import Optional
 
-from .base import TextLLMProvider
+TEXT_MODEL = "mock-text"
+VISION_MODEL = "mock-vision"
 
 
-class MockProvider(TextLLMProvider):
-    """Deterministic mock provider useful for tests."""
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
 
-    def __init__(self, template: str | None = None) -> None:
-        self._template = template or "[MOCK]{digest}"
 
-    def generate(self, prompt: str, **_: Any) -> str:
-        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
-        return self._template.format(digest=digest, prompt=prompt)
+def chat(
+    prompt: str,
+    *,
+    system: Optional[str] = None,
+    max_tokens: int = 256,
+    temperature: float = 0.7,
+    model: Optional[str] = None,
+) -> str:
+    parts = ["[mock-chat]"]
+    if system:
+        parts.append(f"system={_digest(system)}")
+    parts.append(_digest(prompt))
+    return " ".join(parts)
+
+
+def caption(
+    image_path: str,
+    *,
+    prompt: str = "请用一句中文描述图片内容",
+    max_tokens: int = 80,
+    model: Optional[str] = None,
+) -> str:
+    name = Path(image_path).name
+    prompt_digest = _digest(prompt)
+    return f"[mock-caption] {name}:{prompt_digest}"
+
+
+__all__ = ["TEXT_MODEL", "VISION_MODEL", "chat", "caption"]

@@ -568,13 +568,14 @@ def render_artifact(label: str, rel_path: str):
     data = _read_bytes_safe(p)
     if data is not None:
         mime = "application/json" if p.suffix.lower() == ".json" else "text/plain"
+        artifact_key = str(p).replace("/", "-")
         st.download_button(
             label=f"Download {p.name}",
             data=data,
             file_name=p.name,
             mime=mime,
             use_container_width=True,
-            key=f"dl-{label}-{p.name}",
+            key=f"dl-{label}-{artifact_key}",
         )
     else:
         st.info("Artifact not readable from UI process; path is shown for reference.")
@@ -950,7 +951,9 @@ with main_col:
         st.session_state.sample_size = sample_size_control("Preview sample size", csv_count)
     else:
         img_count = len(image_paths)
-        st.session_state.sample_size = sample_size_control("Preview sample size", img_count)
+        st.session_state.sample_size = sample_size_control(
+            "Preview sample size", img_count, default=3
+        )
 
     if dataset_kind == "csv" and current_dataset_path:
         dataset_payload = build_dataset_payload_csv(current_dataset_path)

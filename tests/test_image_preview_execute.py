@@ -6,8 +6,7 @@ import pandas as pd
 from PIL import Image
 
 from backend.app.main import Plan, Operation, execute, preview
-from backend.vdpt.providers.mock import MockProvider
-from backend.vdpt.providers.vision import MockVisionProvider
+from backend.vdpt.providers import mock as mock_provider
 
 
 def _create_test_images(session_dir: Path) -> list[Path]:
@@ -25,8 +24,7 @@ def _create_test_images(session_dir: Path) -> list[Path]:
 
 
 def _expected_caption(path: Path) -> str:
-    provider = MockVisionProvider()
-    return provider.caption(path)
+    return mock_provider.caption(str(path), prompt="Describe")
 
 
 def test_preview_and_execute_images(tmp_path):
@@ -53,9 +51,7 @@ def test_preview_and_execute_images(tmp_path):
         ],
     )
 
-    provider = MockProvider()
-
-    preview_result = preview(plan, provider=provider)
+    preview_result = preview(plan)
 
     assert preview_result["preview_sample_size"] == 2
     assert len(preview_result["records"]) == 2
@@ -85,7 +81,7 @@ def test_preview_and_execute_images(tmp_path):
     assert preview_metadata["preview_sample_size"] == preview_result["preview_sample_size"]
     assert preview_metadata["record_count"] == len(preview_result["records"])
     assert preview_metadata["provider"] == "mock"
-    assert preview_metadata["model"] == "mock"
+    assert preview_metadata["model"] == "mock-vision"
     assert preview_metadata["args"]["dataset"]["session"] == session_id
     assert preview_metadata["artifacts"]["captions"] == str(preview_captions_path)
     assert preview_metadata["input_dir"] == str(uploads_dir.resolve())
@@ -101,7 +97,7 @@ def test_preview_and_execute_images(tmp_path):
         resized_path = Path(record["resized_path"])
         assert resized_path.exists()
 
-    execute_result = execute(plan, provider=provider)
+    execute_result = execute(plan)
 
     assert execute_result["ok"] is True
     artifacts = execute_result["artifacts"]
@@ -133,7 +129,7 @@ def test_preview_and_execute_images(tmp_path):
     assert sorted(metadata["artifacts"]["generated"]) == sorted(str(p) for p in generated_paths)
     assert metadata["files"] == [path.name for path in image_paths]
     assert metadata["provider"] == "mock"
-    assert metadata["model"] == "mock"
+    assert metadata["model"] == "mock-vision"
     assert metadata["args"]["dataset"]["session"] == session_id
     assert metadata["record_count"] == len(image_paths)
     assert metadata["preview_sample_size"] == preview_result["preview_sample_size"]

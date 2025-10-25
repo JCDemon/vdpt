@@ -10,8 +10,8 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
 from ..schemas import TodoCreate, TodoRead
+from backend.vdpt import providers
 from ..vdpt.io import read_csv, sha256_bytes, write_csv
-from ..vdpt.providers import MockProvider, QwenProvider, TextLLMProvider, get_vision_provider
 from ..services import TodoService
 from .preview.preview_engine import (
     preview_classify,
@@ -21,13 +21,6 @@ from .preview.preview_engine import (
 from .provenance.recorder import bump_frequency, bump_recency, snapshot
 
 __version__ = "0.1.0"
-
-
-def get_text_provider() -> TextLLMProvider:
-    """Return the configured text generation provider."""
-    if os.getenv("DASHSCOPE_API_KEY"):
-        return QwenProvider()
-    return MockProvider()
 
 
 todo_service = TodoService()
@@ -111,12 +104,12 @@ def provenance_snapshot() -> Dict[str, Any]:
     return snapshot()
 
 
-def preview(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) -> Dict[str, Any]:
+def preview(plan: Plan) -> Dict[str, Any]:
     dataset = plan.dataset
     if isinstance(dataset, CsvDataset):
-        return _preview_csv(plan, provider)
+        return _preview_csv(plan)
     if isinstance(dataset, ImageDataset):
-        return _preview_images(plan, provider)
+        return _preview_images(plan)
 
     details: Dict[str, Any] = {}
     for i, op in enumerate(plan.ops):
@@ -127,12 +120,12 @@ def preview(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) 
     }
 
 
-def execute(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) -> Dict[str, Any]:
+def execute(plan: Plan) -> Dict[str, Any]:
     dataset = plan.dataset
     if isinstance(dataset, CsvDataset):
-        return _execute_csv(plan, provider)
+        return _execute_csv(plan)
     if isinstance(dataset, ImageDataset):
-        return _execute_images(plan, provider)
+        return _execute_images(plan)
 
     keys = [op.kind for op in plan.ops]
     bump_frequency(keys)
@@ -140,7 +133,7 @@ def execute(plan: Plan, provider: TextLLMProvider = Depends(get_text_provider)) 
     return {"ok": True, "applied": len(plan.ops)}
 
 
-def _preview_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
+def _preview_csv(plan: Plan) -> Dict[str, Any]:
     dataset = cast(CsvDataset, plan.dataset)
     assert dataset is not None  # for type-checkers
 
@@ -152,7 +145,7 @@ def _preview_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     sample_df = _sample_dataframe(df, dataset)
-    processed_df, new_columns = _apply_tabular_ops(sample_df, plan.ops, provider)
+    processed_df, new_columns = _apply_tabular_ops(sample_df, plan.ops)
 
     records = processed_df.to_dict(orient="records")
     return {
@@ -163,7 +156,7 @@ def _preview_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
     }
 
 
-def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
+def _execute_csv(plan: Plan) -> Dict[str, Any]:
     dataset = cast(CsvDataset, plan.dataset)
     assert dataset is not None
 
@@ -176,11 +169,11 @@ def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     artifacts_dir = _create_artifact_dir()
-    processed_df, _ = _apply_tabular_ops(df.copy(), plan.ops, provider, out_dir=artifacts_dir)
+    processed_df, _ = _apply_tabular_ops(df.copy(), plan.ops, out_dir=artifacts_dir)
     output_path = artifacts_dir / "output.csv"
     write_csv(processed_df, output_path)
 
-    preview_payload = _preview_csv(plan, provider)
+    preview_payload = _preview_csv(plan)
     preview_path = artifacts_dir / "preview.json"
     preview_path.write_text(json.dumps(preview_payload, indent=2))
 
@@ -208,7 +201,7 @@ def _execute_csv(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
     }
 
 
-def _preview_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
+def _preview_images(plan: Plan) -> Dict[str, Any]:
     dataset = cast(ImageDataset, plan.dataset)
     assert dataset is not None
 
@@ -276,7 +269,7 @@ def _preview_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
     return result
 
 
-def _execute_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
+def _execute_images(plan: Plan) -> Dict[str, Any]:
     dataset = cast(ImageDataset, plan.dataset)
     assert dataset is not None
 
@@ -323,7 +316,7 @@ def _execute_images(plan: Plan, provider: TextLLMProvider) -> Dict[str, Any]:
     output_path = artifacts_dir / "output.csv"
     output_df.to_csv(output_path, index=False)
 
-    preview_payload = _preview_images(plan, provider)
+    preview_payload = _preview_images(plan)
     preview_path = artifacts_dir / "preview.json"
     preview_path.write_text(json.dumps(preview_payload, indent=2))
 
@@ -480,13 +473,11 @@ def _image_dataset_input_dir(dataset: ImageDataset) -> Optional[str]:
 
 
 def _image_provider_details() -> tuple[str, str]:
-    provider_name = (
-        (os.getenv("VDPT_VISION_PROVIDER") or os.getenv("VDPT_PROVIDER") or "mock").strip().lower()
+    provider_name = (os.getenv("VDPT_PROVIDER") or "mock").strip().lower()
+    provider_module = providers.current
+    model_value = getattr(provider_module, "VISION_MODEL", None) or getattr(
+        provider_module, "TEXT_MODEL", provider_name
     )
-    provider = get_vision_provider()
-    model_value = getattr(provider, "model", None) or getattr(provider, "_model", None)
-    if not model_value:
-        model_value = provider_name
     return provider_name, str(model_value)
 
 
@@ -521,7 +512,6 @@ def _build_image_metadata(
 def _apply_tabular_ops(
     df: pd.DataFrame,
     ops: Sequence[Operation],
-    provider: TextLLMProvider,
     out_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, Any]]]:
     working = df.copy()
@@ -597,7 +587,7 @@ def _apply_tabular_ops(
             def classify_value(value: Any) -> str:
                 text = "" if pd.isna(value) else str(value)
                 try:
-                    return preview_classify(text, labels, params, provider)
+                    return preview_classify(text, labels, params)
                 except RuntimeError as exc:
                     raise HTTPException(status_code=500, detail=str(exc)) from exc
 
