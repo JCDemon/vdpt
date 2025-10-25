@@ -3,11 +3,11 @@ import os
 import random
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Literal, Optional, Sequence, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Sequence, cast
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from ..schemas import TodoCreate, TodoRead
 from backend.vdpt import providers
@@ -19,6 +19,7 @@ from .preview.preview_engine import (
     run_operation,
 )
 from .provenance.recorder import bump_frequency, bump_recency, snapshot
+from .schemas import CsvDataset, Dataset, ImageDataset
 
 __version__ = "0.1.0"
 
@@ -47,48 +48,9 @@ class Operation(BaseModel):
     classify: Optional[Dict[str, Any]] = None
 
 
-class CsvDataset(BaseModel):
-    type: Literal["csv"]
-    path: str
-    sample_size: Optional[int] = Field(default=5, ge=1)
-    random_sample: bool = False
-    random_seed: Optional[int] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_kind(cls, values: Any) -> Any:
-        if isinstance(values, dict):
-            kind = values.pop("kind", None)
-            if kind and "type" not in values:
-                values["type"] = kind
-        return values
-
-
-class ImageDataset(BaseModel):
-    type: Literal["images"]
-    session: Optional[str] = None
-    path: Optional[str] = None
-    paths: List[str] = Field(default_factory=list)
-    sample_size: Optional[int] = Field(default=None, ge=1)
-    random_sample: bool = False
-    random_seed: Optional[int] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_kind(cls, values: Any) -> Any:
-        if isinstance(values, dict):
-            kind = values.pop("kind", None)
-            if kind and "type" not in values:
-                values["type"] = kind
-        return values
-
-
-DatasetType = Annotated[Union[CsvDataset, ImageDataset], Field(discriminator="type")]
-
-
 class Plan(BaseModel):
     ops: List[Operation] = Field(default_factory=list)
-    dataset: Optional[DatasetType] = None
+    dataset: Optional[Dataset] = None
 
 
 # Backwards compatibility for existing callers instantiating Plan.Dataset
@@ -109,7 +71,9 @@ def preview(plan: Plan) -> Dict[str, Any]:
     if isinstance(dataset, CsvDataset):
         return _preview_csv(plan)
     if isinstance(dataset, ImageDataset):
-        return _preview_images(plan)
+        normalized_dataset = _normalize_image_dataset(dataset)
+        normalized_plan = plan.model_copy(update={"dataset": normalized_dataset})
+        return _preview_images(normalized_plan)
 
     details: Dict[str, Any] = {}
     for i, op in enumerate(plan.ops):
@@ -125,7 +89,9 @@ def execute(plan: Plan) -> Dict[str, Any]:
     if isinstance(dataset, CsvDataset):
         return _execute_csv(plan)
     if isinstance(dataset, ImageDataset):
-        return _execute_images(plan)
+        normalized_dataset = _normalize_image_dataset(dataset)
+        normalized_plan = plan.model_copy(update={"dataset": normalized_dataset})
+        return _execute_images(normalized_plan)
 
     keys = [op.kind for op in plan.ops]
     bump_frequency(keys)
@@ -368,6 +334,48 @@ def _operation_params(op: Operation) -> Dict[str, Any]:
     return params
 
 
+def _normalize_image_dataset(dataset: ImageDataset) -> ImageDataset:
+    updates: Dict[str, Any] = {}
+
+    base_dir: Optional[Path] = None
+
+    if dataset.path:
+        base_dir = Path(dataset.path).expanduser()
+        if not base_dir.is_absolute():
+            base_dir = (Path.cwd() / base_dir).resolve()
+        else:
+            base_dir = base_dir.resolve()
+        updates["path"] = str(base_dir)
+
+    if dataset.paths:
+        normalized_paths: List[str] = []
+        for raw in dataset.paths:
+            candidate = Path(raw)
+            if candidate.is_absolute():
+                normalized_paths.append(str(candidate.resolve()))
+                continue
+
+            if dataset.path and base_dir is not None:
+                normalized_paths.append(str((base_dir / candidate).resolve()))
+                continue
+
+            if dataset.session:
+                normalized_paths.append(str(candidate))
+                continue
+
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="relative image paths require dataset.path",
+            )
+
+        if normalized_paths != dataset.paths:
+            updates["paths"] = normalized_paths
+
+    if updates:
+        return dataset.model_copy(update=updates)
+    return dataset
+
+
 def _resolve_image_paths(dataset: ImageDataset) -> List[Path]:
     base_dir: Optional[Path] = None
 
@@ -398,8 +406,8 @@ def _resolve_image_paths(dataset: ImageDataset) -> List[Path]:
             if not candidate.is_absolute():
                 if base_dir is None:
                     raise HTTPException(
-                        status_code=500,
-                        detail="relative image paths require a dataset 'path' or 'session'",
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="relative image paths require dataset.path",
                     )
                 candidate = base_dir / candidate
             candidates.append(candidate)
