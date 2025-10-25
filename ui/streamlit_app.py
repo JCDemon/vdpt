@@ -388,14 +388,26 @@ def _render_image_gallery(paths: List[Path], columns: int = 3) -> None:
                 st.image(str(path), caption=path.name, use_container_width=True)
 
 
-def sample_size_control(label: str, count: int, default: int = 5) -> int:
-    """Return a valid sample size. For count<=1, skip slider and return count."""
+def sample_size_control(
+    label: str,
+    count: int,
+    default: int = 5,
+    *,
+    allow_single_slider: bool = False,
+) -> int:
+    """Return a valid sample size. For count<=0, skip slider. Optionally allow single."""
 
-    default = min(default, max(count, 1))
-    if count <= 1:
-        st.caption(f"{label}: {count}")
-        return count
-    return st.slider(label, min_value=1, max_value=count, value=default)
+    if count <= 0:
+        st.caption(f"{label}: 0")
+        return 0
+
+    max_value = max(1, count)
+    default = min(default, max_value)
+    if count == 1 and not allow_single_slider:
+        st.caption(f"{label}: 1")
+        return 1
+
+    return st.slider(label, min_value=1, max_value=max_value, value=default)
 
 
 def build_dataset_payload_csv(csv_path: str) -> Dict[str, Any]:
@@ -558,7 +570,7 @@ def _read_bytes_safe(p: Path) -> bytes | None:
         return None
 
 
-def render_artifact(label: str, rel_path: str):
+def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None):
     """Show an artifact row with a copyable path and a download button if readable."""
     import streamlit as st
 
@@ -569,16 +581,39 @@ def render_artifact(label: str, rel_path: str):
     if data is not None:
         mime = "application/json" if p.suffix.lower() == ".json" else "text/plain"
         artifact_key = str(p).replace("/", "-")
+        safe_label = label.replace(" ", "-")
+        suffix = (key_suffix or artifact_key).replace("/", "-")
         st.download_button(
             label=f"Download {p.name}",
             data=data,
             file_name=p.name,
             mime=mime,
             use_container_width=True,
-            key=f"dl-{label}-{artifact_key}",
+            key=f"dl-{safe_label}-{suffix}",
         )
     else:
         st.info("Artifact not readable from UI process; path is shown for reference.")
+
+
+def _extract_artifact_run_identifier(payload: Any) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("run_id", "runId", "runID", "time_id", "timeId", "timeID"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    artifacts = payload.get("artifacts")
+    if isinstance(artifacts, dict):
+        for value in artifacts.values():
+            if isinstance(value, str) and value:
+                parts = Path(value).parts
+                for part in reversed(parts):
+                    if part.startswith("run-"):
+                        return part
+
+    return None
 
 
 def render_artifacts_section(resp_json: Any) -> None:
@@ -587,14 +622,15 @@ def render_artifacts_section(resp_json: Any) -> None:
         return
 
     st.subheader("Artifacts")
+    run_identifier = _extract_artifact_run_identifier(resp_json)
     for key in ("captions", "metadata", "output_csv", "preview"):
         if key in arts and arts[key]:
-            render_artifact(key, arts[key])
+            render_artifact(key, arts[key], key_suffix=run_identifier)
     for key, val in arts.items():
         if key in ("captions", "metadata", "output_csv", "preview"):
             continue
         if isinstance(val, str):
-            render_artifact(key, val)
+            render_artifact(key, val, key_suffix=run_identifier)
 
 
 def _prepare_plan_payload(
@@ -903,7 +939,7 @@ else:
                 st.session_state.selected_images = [
                     item for item in st.session_state.selected_images if item != rel_path
                 ]
-                st.experimental_rerun()
+                st.rerun()
     else:
         st.sidebar.info("Upload PNG or JPG files to begin.")
 
@@ -951,8 +987,12 @@ with main_col:
         st.session_state.sample_size = sample_size_control("Preview sample size", csv_count)
     else:
         img_count = len(image_paths)
+        default_value = min(5, max(1, img_count))
         st.session_state.sample_size = sample_size_control(
-            "Preview sample size", img_count, default=3
+            "Preview sample size",
+            img_count,
+            default=default_value,
+            allow_single_slider=True,
         )
 
     if dataset_kind == "csv" and current_dataset_path:
@@ -1112,7 +1152,7 @@ with main_col:
             remove_key = f"remove_{dataset_kind}_{idx}"
             if st.button("Remove", key=remove_key):
                 st.session_state.plan_ops.pop(idx)
-                st.experimental_rerun()
+                st.rerun()
 
     add_col1, add_col2 = st.columns([1, 3])
     add_kind_key = f"add_kind_{dataset_kind}"
@@ -1127,7 +1167,7 @@ with main_col:
     if add_col1.button("Add operation"):
         new_params = _default_params_for_kind(add_kind, columns if dataset_kind == "csv" else [])
         st.session_state.plan_ops.append({"kind": add_kind, "params": new_params})
-        st.experimental_rerun()
+        st.rerun()
 
     if dataset_payload is not None:
         debug_plan_payload = _prepare_plan_payload(
