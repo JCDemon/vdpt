@@ -337,6 +337,8 @@ def _operation_params(op: Operation) -> Dict[str, Any]:
 def _normalize_image_dataset(dataset: ImageDataset) -> ImageDataset:
     updates: Dict[str, Any] = {}
 
+    base_dir: Optional[Path] = None
+
     if dataset.path:
         base_dir = Path(dataset.path).expanduser()
         if not base_dir.is_absolute():
@@ -345,25 +347,28 @@ def _normalize_image_dataset(dataset: ImageDataset) -> ImageDataset:
             base_dir = base_dir.resolve()
         updates["path"] = str(base_dir)
 
-        if dataset.paths:
-            normalized_paths: List[str] = []
-            for raw in dataset.paths:
-                candidate = Path(raw)
-                if not candidate.is_absolute():
-                    candidate = base_dir / candidate
+    if dataset.paths:
+        normalized_paths: List[str] = []
+        for raw in dataset.paths:
+            candidate = Path(raw)
+            if candidate.is_absolute():
                 normalized_paths.append(str(candidate.resolve()))
-            updates["paths"] = normalized_paths
-    else:
-        if dataset.paths:
-            normalized_paths = []
-            for raw in dataset.paths:
-                candidate = Path(raw)
-                if not candidate.is_absolute():
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail="relative image paths require dataset.path",
-                    )
-                normalized_paths.append(str(candidate.resolve()))
+                continue
+
+            if dataset.path and base_dir is not None:
+                normalized_paths.append(str((base_dir / candidate).resolve()))
+                continue
+
+            if dataset.session:
+                normalized_paths.append(str(candidate))
+                continue
+
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="relative image paths require dataset.path",
+            )
+
+        if normalized_paths != dataset.paths:
             updates["paths"] = normalized_paths
 
     if updates:
