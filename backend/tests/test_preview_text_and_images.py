@@ -6,8 +6,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.app.preview.preview_engine import preview_dataset
-from backend.vdpt import providers
+from backend.app.preview.preview_engine import preview_dataset  # noqa: E402
+from backend.vdpt import providers  # noqa: E402
 
 
 class _DummyProvider:
