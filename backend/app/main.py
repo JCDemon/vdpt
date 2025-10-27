@@ -68,6 +68,11 @@ def provenance_snapshot() -> Dict[str, Any]:
     return snapshot()
 
 
+def config() -> Dict[str, Any]:
+    provider_name = providers.current.__name__.split(".")[-1]
+    return {"provider": provider_name, "mock": bool(os.getenv("VDPT_MOCK"))}
+
+
 def preview_api(plan: PreviewRequestPlan) -> Dict[str, Any]:
     dataset = plan.dataset
     runtime_ops = plan.runtime_operations_for(dataset.type)
@@ -729,6 +734,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="VDPT API", version=__version__)
 
     app.get("/health", tags=["health"])(health)
+    app.get("/config", tags=["config"])(config)
     app.get("/provenance/snapshot", tags=["provenance"])(provenance_snapshot)
     app.post("/preview", tags=["preview"])(preview_api)
     app.post("/execute", tags=["execute"])(execute)

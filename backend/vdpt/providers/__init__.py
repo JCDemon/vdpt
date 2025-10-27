@@ -1,7 +1,19 @@
 import importlib
 import os
+from typing import Literal, cast
 
-_PROVIDER_NAME = os.getenv("VDPT_PROVIDER", "mock")
-current = importlib.import_module(f".{_PROVIDER_NAME}", __name__)
 
-__all__ = ["current"]
+def detect_provider() -> Literal["qwen", "mock"]:
+    env_provider = os.getenv("VDPT_PROVIDER")
+    if env_provider:
+        return cast(Literal["qwen", "mock"], env_provider)
+
+    if os.getenv("DASHSCOPE_API_KEY"):
+        return "qwen"
+
+    return "mock"
+
+
+current = importlib.import_module(f".{detect_provider()}", package=__name__)
+
+__all__ = ["current", "detect_provider"]
