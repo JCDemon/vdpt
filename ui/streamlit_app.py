@@ -750,7 +750,9 @@ def _prepare_plan_payload(
         if dataset_copy.get("type") == "images":
             paths_value = dataset_copy.get("paths")
             if isinstance(paths_value, list):
-                dataset_copy["paths"] = [Path(str(name)).name for name in paths_value if name is not None]
+                dataset_copy["paths"] = [
+                    Path(str(name)).name for name in paths_value if name is not None
+                ]
         payload["dataset"] = dataset_copy
 
     if preview_sample_size is not None:
