@@ -74,7 +74,7 @@ IMAGE_SAMPLE_PLAN: Dict[str, Any] = {
         },
         {
             "kind": "img_resize",
-            "params": {"width": 384, "height": 384, "keep_ratio": True},
+            "params": {"width": 384, "height": 384, "keep_aspect": True},
         },
     ],
 }
@@ -412,6 +412,12 @@ def sample_size_control(
     return st.slider(label, min_value=1, max_value=max_value, value=default)
 
 
+def drop_none(values: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove keys with ``None`` values from ``values``."""
+
+    return {key: val for key, val in values.items() if val is not None}
+
+
 def build_dataset_payload_csv(csv_path: str) -> Dict[str, Any]:
     return {"type": "csv", "path": csv_path}
 
@@ -452,7 +458,7 @@ def _default_params_for_kind(kind: str, columns: List[str]) -> Dict[str, Any]:
     if kind == "img_caption":
         return {"instructions": "", "max_tokens": 80}
     if kind == "img_resize":
-        return {"width": 512, "height": 512, "keep_ratio": True}
+        return {"width": 512, "height": 512, "keep_aspect": True}
     return {}
 
 
@@ -506,9 +512,9 @@ def _ensure_operation_params(
         except (TypeError, ValueError):
             params["max_tokens"] = 80
     elif kind == "img_resize":
-        if "keep_aspect" in params and "keep_ratio" not in params:
-            params["keep_ratio"] = bool(params.pop("keep_aspect"))
-        params["keep_ratio"] = bool(params.get("keep_ratio", True))
+        if "keep_ratio" in params and "keep_aspect" not in params:
+            params["keep_aspect"] = bool(params.pop("keep_ratio"))
+        params["keep_aspect"] = bool(params.get("keep_aspect", True))
         for key in ("width", "height"):
             try:
                 value = int(params.get(key, 512) or 512)
@@ -641,101 +647,122 @@ def _prepare_plan_payload(
     ops: List[Dict[str, Any]],
     dataset: Optional[Dict[str, Any]],
     *,
-    preview: bool = False,
-    limit: Optional[int] = None,
+    preview_sample_size: Optional[int] = None,
 ) -> Dict[str, Any]:
-    plan_ops: List[Dict[str, Any]] = []
+    operations: List[Dict[str, Any]] = []
     for op in ops:
         kind = op.get("kind")
         params = op.get("params") if isinstance(op.get("params"), dict) else {}
         if not kind:
             continue
-        sanitized: Dict[str, Any]
+
         if kind == "summarize":
-            field_value = params.get("field", op.get("field", ""))
-            instructions_value = params.get("instructions", op.get("instructions", ""))
-            max_tokens_raw = params.get("max_tokens", op.get("max_tokens", 128))
+            max_tokens_raw = params.get("max_tokens", 128)
             try:
-                max_tokens_value = int(max_tokens_raw or 128)
+                max_tokens_value = int(max_tokens_raw if max_tokens_raw is not None else 128)
             except (TypeError, ValueError):
                 max_tokens_value = 128
-            sanitized = {
-                "field": str(field_value or ""),
-                "instructions": str(instructions_value or ""),
-                "max_tokens": max_tokens_value,
-            }
+            field_value = params.get("field")
+            instructions_value = params.get("instructions")
+            sanitized = drop_none(
+                {
+                    "kind": "summarize",
+                    "field": "" if field_value is None else str(field_value),
+                    "instructions": "" if instructions_value is None else str(instructions_value),
+                    "max_tokens": max_tokens_value,
+                }
+            )
         elif kind == "classify":
-            labels = params.get("labels") or op.get("labels") or []
-            if not isinstance(labels, list):
-                labels = [str(labels)]
-            sanitized = {
-                "field": str(params.get("field", op.get("field", "")) or ""),
-                "labels": [str(label) for label in labels],
-            }
+            labels = params.get("labels")
+            if isinstance(labels, list):
+                sanitized_labels = [str(label) for label in labels]
+            elif labels is None:
+                sanitized_labels = list(DEFAULT_LABEL_OPTIONS)
+            else:
+                sanitized_labels = [str(labels)]
+            field_value = params.get("field")
+            sanitized = drop_none(
+                {
+                    "kind": "classify",
+                    "field": "" if field_value is None else str(field_value),
+                    "labels": sanitized_labels,
+                }
+            )
         elif kind == "img_caption":
             try:
-                max_tokens = int(params.get("max_tokens", op.get("max_tokens", 80)) or 80)
+                max_tokens = int(params.get("max_tokens", 80) or 80)
             except (TypeError, ValueError):
                 max_tokens = 80
-            instructions_value = params.get(
-                "instructions",
-                op.get("instructions", op.get("prompt", "")),
+            instructions_value = params.get("instructions") or params.get("prompt") or ""
+            sanitized = drop_none(
+                {
+                    "kind": "img_caption",
+                    "instructions": str(instructions_value),
+                    "max_tokens": max_tokens,
+                }
             )
-            sanitized = {
-                "instructions": str(instructions_value or ""),
-                "max_tokens": max_tokens,
-            }
         elif kind == "img_resize":
-            width_source = params.get("width", op.get("width", 512))
+            width_source = params.get("width", 512)
+            height_source = params.get("height", width_source)
             try:
                 width = int(width_source or 512)
             except (TypeError, ValueError):
                 width = 512
-            height_source = params.get("height", op.get("height", width))
             try:
                 height = int(height_source or width)
             except (TypeError, ValueError):
                 height = width
-            sanitized = {
-                "width": max(width, 1),
-                "height": max(height, 1),
-                "keep_ratio": bool(
-                    params.get("keep_ratio", op.get("keep_ratio", True))
-                    or params.get("keep_aspect", op.get("keep_aspect", False))
-                ),
-            }
+            keep_aspect = bool(params.get("keep_aspect", True))
+            sanitized = drop_none(
+                {
+                    "kind": "img_resize",
+                    "width": max(width, 1),
+                    "height": max(height, 1),
+                    "keep_aspect": keep_aspect,
+                }
+            )
         else:
-            sanitized = dict(params)
-        plan_ops.append({"kind": kind, "params": sanitized})
+            flattened: Dict[str, Any] = {"kind": str(kind)}
+            if isinstance(params, dict):
+                for key, value in params.items():
+                    if value is None:
+                        continue
+                    flattened[key] = value
+            sanitized = flattened
 
-    payload: Dict[str, Any] = {"operations": plan_ops}
+        operations.append(sanitized)
 
-    limit_value: Optional[int]
-    if limit is None:
-        limit_value = None
-    else:
-        try:
-            limit_value = max(0, int(limit))
-        except (TypeError, ValueError):
-            limit_value = 0
+    payload: Dict[str, Any] = {"operations": operations}
 
-    dataset_copy: Optional[Dict[str, Any]] = None
     if dataset:
-        dataset_copy = dict(dataset)
+        dataset_copy: Dict[str, Any] = {}
+        for key, value in dataset.items():
+            if value is None:
+                continue
+            dataset_copy[key] = value
         dataset_type = dataset_copy.get("type") or dataset_copy.get("kind")
-        if dataset_copy.get("type") is None and dataset_copy.get("kind") is not None:
-            dataset_copy["type"] = dataset_copy.pop("kind")
-        if "paths" in dataset_copy and isinstance(dataset_copy["paths"], list):
-            dataset_copy["paths"] = list(dataset_copy["paths"])
-            if preview and dataset_type == "images" and limit_value is not None and limit_value > 0:
-                paths_list = dataset_copy["paths"]
-                dataset_copy["paths"] = paths_list[: min(limit_value, len(paths_list))]
-        if "path" in dataset_copy:
-            dataset_copy["path"] = str(dataset_copy["path"])
+        if dataset_type is not None:
+            dataset_copy["type"] = str(dataset_type)
+        dataset_copy.pop("kind", None)
+        path_value = dataset_copy.get("path")
+        if path_value is not None:
+            dataset_copy["path"] = str(path_value)
+        if dataset_copy.get("type") == "images":
+            paths_value = dataset_copy.get("paths")
+            if isinstance(paths_value, list):
+                dataset_copy["paths"] = [
+                    Path(str(name)).name for name in paths_value if name is not None
+                ]
         payload["dataset"] = dataset_copy
 
-    if limit_value is not None:
-        payload["limit"] = limit_value
+    if preview_sample_size is not None:
+        try:
+            sample_size = int(preview_sample_size)
+        except (TypeError, ValueError):
+            sample_size = None
+        else:
+            if sample_size >= 0:
+                payload["preview_sample_size"] = sample_size
 
     return payload
 
@@ -1114,7 +1141,7 @@ with main_col:
                 elif op_kind == "img_resize":
                     width_key = f"img_width_{idx}"
                     height_key = f"img_height_{idx}"
-                    keep_ratio_key = f"img_keep_ratio_{idx}"
+                    keep_aspect_key = f"img_keep_aspect_{idx}"
                     width_value = int(
                         st.number_input(
                             "Width",
@@ -1126,12 +1153,12 @@ with main_col:
                         )
                     )
                     params["width"] = width_value
-                    keep_ratio_value = st.checkbox(
+                    keep_aspect_value = st.checkbox(
                         "Keep aspect ratio",
-                        value=bool(params.get("keep_ratio", True)),
-                        key=keep_ratio_key,
+                        value=bool(params.get("keep_aspect", True)),
+                        key=keep_aspect_key,
                     )
-                    params["keep_ratio"] = bool(keep_ratio_value)
+                    params["keep_aspect"] = bool(keep_aspect_value)
                     existing_height = params.get("height", width_value)
                     try:
                         existing_height_int = int(existing_height)
@@ -1146,9 +1173,9 @@ with main_col:
                         value=existing_height_int,
                         step=1,
                         key=height_key,
-                        disabled=keep_ratio_value,
+                        disabled=keep_aspect_value,
                     )
-                    if keep_ratio_value:
+                    if keep_aspect_value:
                         params["height"] = width_value
                     else:
                         params["height"] = int(height_value)
@@ -1177,7 +1204,7 @@ with main_col:
         debug_plan_payload = _prepare_plan_payload(
             st.session_state.plan_ops,
             dataset_payload,
-            limit=st.session_state.sample_size,
+            preview_sample_size=st.session_state.sample_size,
         )
         with st.expander("Debug: request payload", expanded=False):
             st.json(debug_plan_payload)
@@ -1221,8 +1248,7 @@ with main_col:
             req_body = _prepare_plan_payload(
                 st.session_state.plan_ops,
                 dataset_payload,
-                preview=True,
-                limit=st.session_state.sample_size,
+                preview_sample_size=st.session_state.sample_size,
             )
             url = f"{backend_url.rstrip('/')}/preview"
             result = _post_json(url, req_body)
@@ -1250,7 +1276,7 @@ with main_col:
             req_body = _prepare_plan_payload(
                 st.session_state.plan_ops,
                 dataset_payload,
-                limit=st.session_state.sample_size,
+                preview_sample_size=st.session_state.sample_size,
             )
             url = f"{backend_url.rstrip('/')}/execute"
             result = _post_json(url, req_body)
