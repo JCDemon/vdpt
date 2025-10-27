@@ -329,6 +329,8 @@ def _render_image_preview_table(records: List[Dict[str, Any]], ops: List[Dict[st
         return
 
     has_caption = any((op.get("kind") == "img_caption") for op in ops)
+    if not has_caption:
+        has_caption = any("caption" in record for record in records)
     has_resize = any((op.get("kind") == "img_resize") for op in ops)
 
     column_labels: List[str] = ["Thumb", "Filename"]
@@ -582,14 +584,16 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
         mime = "application/json" if p.suffix.lower() == ".json" else "text/plain"
         artifact_key = str(p).replace("/", "-")
         safe_label = label.replace(" ", "-")
-        suffix = (key_suffix or artifact_key).replace("/", "-")
+        suffix_source = key_suffix or artifact_key
+        suffix = suffix_source.replace("/", "-")
+        key_value = f"dl-{suffix}-{safe_label}"
         st.download_button(
             label=f"Download {p.name}",
             data=data,
             file_name=p.name,
             mime=mime,
             use_container_width=True,
-            key=f"dl-{safe_label}-{suffix}",
+            key=key_value,
         )
     else:
         st.info("Artifact not readable from UI process; path is shown for reference.")
@@ -1281,7 +1285,15 @@ with main_col:
         if schema:
             st.json(schema)
         st.json(preview)
-        render_artifacts_section(preview)
+        preview_artifacts = preview.get("artifacts") if isinstance(preview, dict) else None
+        if dataset_kind == "images":
+            captions_path = None
+            if isinstance(preview_artifacts, dict):
+                captions_path = preview_artifacts.get("captions")
+            if captions_path:
+                render_artifacts_section(preview)
+        else:
+            render_artifacts_section(preview)
 
     if st.session_state.execute_result:
         st.markdown("### Execution results")

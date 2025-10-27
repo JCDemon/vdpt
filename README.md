@@ -64,11 +64,15 @@ VDPT can call DashScope's Qwen models for both text and vision operations. Confi
 environment variables:
 
 ```bash
-export VDPT_PROVIDER=qwen
 export DASHSCOPE_API_KEY="your_dashscope_key_here"
+# optional: explicitly choose the provider (auto-detects otherwise)
+export VDPT_PROVIDER=qwen
 # optional: return deterministic mock responses instead of calling DashScope
 export VDPT_MOCK=1
 ```
+
+If `VDPT_PROVIDER` is not set, the backend automatically selects the Qwen provider whenever a `DASHSCOPE_API_KEY` is
+present, otherwise it falls back to the mock provider. Setting `VDPT_PROVIDER` overrides this auto-detection.
 
 When `VDPT_MOCK` is enabled, both chat and caption requests return short deterministic placeholders so you can preview
 flows without network access. Unsetting `DASHSCOPE_API_KEY` while keeping the Qwen provider active raises a clear error
