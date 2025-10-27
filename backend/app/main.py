@@ -15,9 +15,11 @@ from ..vdpt.io import read_csv, sha256_bytes, write_csv
 from ..services import TodoService
 from .preview.preview_engine import (
     preview_classify,
+    preview_dataset,
     preview_operation,
     run_operation,
 )
+from .preview.schemas import Plan as PreviewRequestPlan
 from .provenance.recorder import bump_frequency, bump_recency, snapshot
 from .schemas import CsvDataset, Dataset, ImageDataset
 
@@ -64,6 +66,72 @@ def health() -> Dict[str, bool]:
 
 def provenance_snapshot() -> Dict[str, Any]:
     return snapshot()
+
+
+def preview_api(plan: PreviewRequestPlan) -> Dict[str, Any]:
+    dataset = plan.dataset
+    runtime_ops = plan.runtime_operations_for(dataset.type)
+
+    if dataset.type == "csv":
+        try:
+            df = read_csv(dataset.path)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        sampling_dataset = dataset
+        if plan.preview_sample_size is not None:
+            sampling_dataset = dataset.model_copy(update={"sample_size": plan.preview_sample_size})
+
+        sample_df = _sample_dataframe(df, sampling_dataset)
+        records = sample_df.to_dict(orient="records")
+        preview_result = preview_dataset("csv", records, runtime_ops)
+
+        payload_records = preview_result.get("records", [])
+        new_columns = preview_result.get("schema", {}).get("new_columns", [])
+        response: Dict[str, Any] = {
+            "records": payload_records,
+            "schema": {"new_columns": new_columns},
+            "preview_sample_size": len(payload_records),
+            "summary": f"preview generated for {len(payload_records)} row(s)",
+        }
+
+        artifacts = preview_result.get("artifacts")
+        if artifacts and any(str(value) for value in artifacts.values()):
+            response["artifacts"] = artifacts
+
+        return response
+
+    if dataset.type == "images":
+        image_paths = _resolve_image_paths(dataset)
+
+        sampling_dataset = dataset
+        if plan.preview_sample_size is not None:
+            sampling_dataset = dataset.model_copy(update={"sample_size": plan.preview_sample_size})
+
+        sample_paths = _sample_image_paths(image_paths, sampling_dataset)
+        records = [{"image_path": str(path)} for path in sample_paths]
+        artifacts_dir = _create_artifact_dir()
+
+        preview_result = preview_dataset(
+            "images",
+            records,
+            runtime_ops,
+            artifacts_dir=artifacts_dir,
+        )
+
+        payload_records = preview_result.get("records", [])
+        preview_result["preview_sample_size"] = len(payload_records)
+        preview_result["summary"] = (
+            f"preview generated for {preview_result['preview_sample_size']} image(s)"
+        )
+        return preview_result
+
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Unsupported dataset type '{dataset.type}'",
+    )
 
 
 def preview(plan: Plan) -> Dict[str, Any]:
@@ -662,7 +730,7 @@ def create_app() -> FastAPI:
 
     app.get("/health", tags=["health"])(health)
     app.get("/provenance/snapshot", tags=["provenance"])(provenance_snapshot)
-    app.post("/preview", tags=["preview"])(preview)
+    app.post("/preview", tags=["preview"])(preview_api)
     app.post("/execute", tags=["execute"])(execute)
 
     app.get("/todos", response_model=List[TodoRead], tags=["todos"])(list_todos)

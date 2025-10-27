@@ -74,6 +74,9 @@ def preview_dataset(
     schema_new_columns: List[str] = []
     captions: List[str] = []
 
+    op_kinds = [op.get("kind") for op in ops]
+    logger.debug("preview_dataset operations=%s", op_kinds)
+
     for original in records:
         record = dict(original)
         errors: List[str] = []
@@ -83,16 +86,23 @@ def preview_dataset(
             params = op.get("params") or {}
 
             if dataset_kind == "csv" and kind == "summarize":
+                source_field = str(params.get("field") or "text")
                 column_name = _resolve_summary_column(params)
                 summary_value = ""
-                try:
-                    op_result = run_operation(record, kind, params)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.exception("summarize preview failed for column '%s'", column_name)
-                    errors.append(f"summarize failed: {exc}")
-                else:
-                    if op_result:
-                        summary_value = str(next(iter(op_result.values())))
+                source_value = original.get(source_field)
+
+                if isinstance(source_value, str):
+                    try:
+                        op_result = run_operation(record, kind, params)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.exception("summarize preview failed for column '%s'", column_name)
+                        errors.append(f"summarize failed: {exc}")
+                    else:
+                        if column_name in op_result:
+                            summary_value = str(op_result[column_name]).strip()
+                        elif op_result:
+                            summary_value = str(next(iter(op_result.values()))).strip()
+
                 record[column_name] = summary_value
                 if column_name not in schema_new_columns:
                     schema_new_columns.append(column_name)
@@ -106,9 +116,12 @@ def preview_dataset(
                     )
                     errors.append(f"img_caption failed: {exc}")
                 else:
-                    caption_value = str(op_result.get("caption", ""))
+                    raw_caption = op_result.get("caption") if op_result else ""
+                    if raw_caption is not None:
+                        caption_value = str(raw_caption).strip()
                 record["caption"] = caption_value
-                captions.append(caption_value)
+                if caption_value:
+                    captions.append(caption_value)
                 if "caption" not in schema_new_columns:
                     schema_new_columns.append("caption")
 
@@ -124,7 +137,7 @@ def preview_dataset(
         processed_records.append(record)
 
     artifacts: Dict[str, str] = {"captions": "", "metadata": ""}
-    if captions:
+    if len(captions) > 0:
         target_dir = _ensure_artifact_dir(artifacts_dir)
         captions_path = target_dir / "captions.json"
         captions_path.write_text(json.dumps(captions, ensure_ascii=False, indent=2))

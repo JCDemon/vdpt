@@ -41,6 +41,15 @@ def tmp_artifacts_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sample_dest = uploads_dir / "sample_news.csv"
     shutil.copy(sample_src, sample_dest)
 
+    images_dir = Path("artifacts") / "bundled_images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    created_images: list[Path] = []
+    for name in ("forest.png", "ocean.png", "sunrise.png"):
+        image_path = images_dir / name
+        if not image_path.exists():
+            image_path.write_bytes(b"placeholder image")
+            created_images.append(image_path)
+
     created_dirs: list[Path] = []
 
     from backend.app import main as main_module
@@ -58,6 +67,9 @@ def tmp_artifacts_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     finally:
         if sample_dest.exists():
             sample_dest.unlink()
+        for image_path in created_images:
+            if image_path.exists():
+                image_path.unlink()
         try:
             uploads_dir.rmdir()
         except OSError:
