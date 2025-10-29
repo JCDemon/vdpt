@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from uuid import uuid4
 
 import pandas as pd
 import requests
@@ -588,11 +589,9 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
     data = _read_bytes_safe(p)
     if data is not None:
         mime = "application/json" if p.suffix.lower() == ".json" else "text/plain"
-        artifact_key = str(p).replace("/", "-")
         safe_label = label.replace(" ", "-")
-        suffix_source = key_suffix or artifact_key
-        suffix = suffix_source.replace("/", "-")
-        key_value = f"dl-{suffix}-{safe_label}"
+        key_context = key_suffix or str(p)
+        key_value = f"dl-{safe_label}-{Path(key_context).name}-{p.name}-{uuid4()}"
         st.download_button(
             label=f"Download {p.name}",
             data=data,
@@ -970,7 +969,7 @@ else:
                 st.session_state.selected_images = [
                     item for item in st.session_state.selected_images if item != rel_path
                 ]
-                st.rerun()
+                st.rerun()  # refresh UI with stable API
     else:
         st.sidebar.info("Upload PNG or JPG files to begin.")
 
@@ -1018,13 +1017,17 @@ with main_col:
         st.session_state.sample_size = sample_size_control("Preview sample size", csv_count)
     else:
         img_count = len(image_paths)
-        default_value = min(5, max(1, img_count))
-        st.session_state.sample_size = sample_size_control(
-            "Preview sample size",
-            img_count,
-            default=default_value,
-            allow_single_slider=True,
-        )
+        if img_count <= 1:
+            sample_size = 1
+            st.caption("Preview sample size: 1 image")
+        else:
+            sample_size = st.slider(
+                "Preview sample size",
+                min_value=1,
+                max_value=img_count,
+                value=min(3, img_count),
+            )
+        st.session_state.sample_size = sample_size
 
     if dataset_kind == "csv" and current_dataset_path:
         dataset_payload = build_dataset_payload_csv(current_dataset_path)
@@ -1183,7 +1186,7 @@ with main_col:
             remove_key = f"remove_{dataset_kind}_{idx}"
             if st.button("Remove", key=remove_key):
                 st.session_state.plan_ops.pop(idx)
-                st.rerun()
+                st.rerun()  # refresh UI with stable API
 
     add_col1, add_col2 = st.columns([1, 3])
     add_kind_key = f"add_kind_{dataset_kind}"
@@ -1198,7 +1201,7 @@ with main_col:
     if add_col1.button("Add operation"):
         new_params = _default_params_for_kind(add_kind, columns if dataset_kind == "csv" else [])
         st.session_state.plan_ops.append({"kind": add_kind, "params": new_params})
-        st.rerun()
+        st.rerun()  # refresh UI with stable API
 
     if dataset_payload is not None:
         debug_plan_payload = _prepare_plan_payload(
