@@ -3,7 +3,7 @@ import os
 import random
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Sequence, cast
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -17,11 +17,15 @@ from .preview.preview_engine import (
     preview_classify,
     preview_dataset,
     preview_operation,
+    start_provenance_run,
     run_operation,
 )
 from .preview.schemas import Plan as PreviewRequestPlan
 from .provenance.recorder import bump_frequency, bump_recency, snapshot
 from .schemas import CsvDataset, Dataset, ImageDataset
+
+if TYPE_CHECKING:  # pragma: no cover - typing aid
+    from .preview.preview_engine import _ProvenanceRun
 
 __version__ = "0.1.0"
 
@@ -102,9 +106,9 @@ def preview_api(plan: PreviewRequestPlan) -> Dict[str, Any]:
             "summary": f"preview generated for {len(payload_records)} row(s)",
         }
 
-        artifacts = preview_result.get("artifacts")
-        if artifacts and any(str(value) for value in artifacts.values()):
-            response["artifacts"] = artifacts
+        artifacts = preview_result.get("artifacts") or {}
+        response["artifacts"] = artifacts
+        response["logs"] = preview_result.get("logs", [])
 
         return response
 
@@ -131,6 +135,7 @@ def preview_api(plan: PreviewRequestPlan) -> Dict[str, Any]:
         preview_result["summary"] = (
             f"preview generated for {preview_result['preview_sample_size']} image(s)"
         )
+        preview_result.setdefault("logs", [])
         return preview_result
 
     raise HTTPException(
@@ -207,17 +212,22 @@ def _execute_csv(plan: Plan) -> Dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    artifacts_dir = _create_artifact_dir()
-    processed_df, _ = _apply_tabular_ops(df.copy(), plan.ops, out_dir=artifacts_dir)
-    output_path = artifacts_dir / "output.csv"
+    run_dir, provenance = start_provenance_run()
+    processed_df, _ = _apply_tabular_ops(
+        df.copy(),
+        plan.ops,
+        out_dir=run_dir,
+        provenance=provenance,
+    )
+    output_path = run_dir / "output.csv"
     write_csv(processed_df, output_path)
 
     preview_payload = _preview_csv(plan)
-    preview_path = artifacts_dir / "preview.json"
+    preview_path = run_dir / "preview.json"
     preview_path.write_text(json.dumps(preview_payload, indent=2))
 
     dataset_hash = sha256_bytes(csv_path.read_bytes())
-    metadata_path = artifacts_dir / "metadata.json"
+    metadata_path = run_dir / "metadata.json"
     metadata = {
         "plan": plan.model_dump(),
         "dataset_hash": dataset_hash,
@@ -227,6 +237,9 @@ def _execute_csv(plan: Plan) -> Dict[str, Any]:
         },
         "preview_sample_size": preview_payload.get("preview_sample_size"),
     }
+
+    provenance_path = provenance.write()
+    metadata["artifacts"]["provenance"] = str(provenance_path)
     metadata_path.write_text(json.dumps(metadata, indent=2))
 
     return {
@@ -236,7 +249,9 @@ def _execute_csv(plan: Plan) -> Dict[str, Any]:
             "output_csv": str(output_path),
             "metadata": str(metadata_path),
             "preview": str(preview_path),
+            "provenance": str(provenance_path),
         },
+        "logs": provenance.logs,
     }
 
 
@@ -246,7 +261,7 @@ def _preview_images(plan: Plan) -> Dict[str, Any]:
 
     image_paths = _resolve_image_paths(dataset)
     sample_paths = _sample_image_paths(image_paths, dataset)
-    run_dir = _create_artifact_dir()
+    run_dir, provenance = start_provenance_run()
     preview_dir = run_dir / "preview"
     preview_dir.mkdir(parents=True, exist_ok=True)
 
@@ -261,18 +276,28 @@ def _preview_images(plan: Plan) -> Dict[str, Any]:
             "__index__": index,
         }
         record: Dict[str, Any] = {"image_path": str(path)}
+        record_entry = provenance.start_record(index, {"image_path": str(path)})
 
         for op in plan.ops:
             params = _operation_params(op)
             try:
                 result = run_operation(row_context, op.kind, params)
             except Exception as exc:
+                provenance.log(
+                    "ERROR",
+                    f"{op.kind} failed",
+                    record_entry=record_entry,
+                    context={"error": str(exc)},
+                )
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             record.update(result)
+            if result:
+                provenance.record_operation(record_entry, op.kind, params, result)
             for column in result:
                 new_columns.setdefault(column, {"name": column, "operation": op.kind})
             provenance_keys.add(f"op:{op.kind}")
 
+        provenance.finish_record(record_entry, record)
         records.append(record)
 
     if provenance_keys:
@@ -300,10 +325,13 @@ def _preview_images(plan: Plan) -> Dict[str, Any]:
     metadata_path = run_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2))
 
+    provenance_path = provenance.write()
     result["artifacts"] = {
         "captions": str(captions_path),
         "metadata": str(metadata_path),
+        "provenance": str(provenance_path),
     }
+    result["logs"] = provenance.logs
 
     return result
 
@@ -313,7 +341,7 @@ def _execute_images(plan: Plan) -> Dict[str, Any]:
     assert dataset is not None
 
     image_paths = _resolve_image_paths(dataset)
-    artifacts_dir = _create_artifact_dir()
+    run_dir, provenance = start_provenance_run()
 
     records: List[Dict[str, Any]] = []
     provenance_keys: set[str] = set()
@@ -325,21 +353,31 @@ def _execute_images(plan: Plan) -> Dict[str, Any]:
             "__index__": index,
         }
         record: Dict[str, Any] = {"image_path": str(path)}
+        record_entry = provenance.start_record(index, {"image_path": str(path)})
 
         for op in plan.ops:
             params = _operation_params(op)
             try:
-                result = run_operation(row_context, op.kind, params, out_dir=artifacts_dir)
+                result = run_operation(row_context, op.kind, params, out_dir=run_dir)
             except Exception as exc:
+                provenance.log(
+                    "ERROR",
+                    f"{op.kind} failed",
+                    record_entry=record_entry,
+                    context={"error": str(exc)},
+                )
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             record.update(result)
+            if result:
+                provenance.record_operation(record_entry, op.kind, params, result)
             for value in result.values():
                 if isinstance(value, str):
                     value_path = Path(value)
-                    if value_path.exists() and str(value_path).startswith(str(artifacts_dir)):
+                    if value_path.exists() and str(value_path).startswith(str(run_dir)):
                         generated_files.add(str(value_path))
             provenance_keys.add(f"op:{op.kind}")
 
+        provenance.finish_record(record_entry, record)
         records.append(record)
 
     if provenance_keys:
@@ -352,20 +390,20 @@ def _execute_images(plan: Plan) -> Dict[str, Any]:
     else:
         output_df = pd.DataFrame(columns=["image_path"])
 
-    output_path = artifacts_dir / "output.csv"
+    output_path = run_dir / "output.csv"
     output_df.to_csv(output_path, index=False)
 
     preview_payload = _preview_images(plan)
-    preview_path = artifacts_dir / "preview.json"
+    preview_path = run_dir / "preview.json"
     preview_path.write_text(json.dumps(preview_payload, indent=2))
 
-    captions_path = artifacts_dir / "captions.json"
+    captions_path = run_dir / "captions.json"
     captions_entries = _collect_image_captions(records)
     captions_path.write_text(json.dumps(captions_entries, ensure_ascii=False, indent=2))
 
     generated_list = sorted(generated_files)
 
-    metadata_path = artifacts_dir / "metadata.json"
+    metadata_path = run_dir / "metadata.json"
     metadata_artifacts: Dict[str, Any] = {
         "output_csv": str(output_path),
         "preview_json": str(preview_path),
@@ -382,11 +420,14 @@ def _execute_images(plan: Plan) -> Dict[str, Any]:
     metadata["record_count"] = len(records)
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
 
+    provenance_path = provenance.write()
+
     artifacts_payload: Dict[str, Any] = {
         "output_csv": str(output_path),
         "metadata": str(metadata_path),
         "preview": str(preview_path),
         "captions": str(captions_path),
+        "provenance": str(provenance_path),
     }
     if generated_files:
         artifacts_payload["generated"] = generated_list
@@ -395,6 +436,7 @@ def _execute_images(plan: Plan) -> Dict[str, Any]:
         "ok": True,
         "applied": len(plan.ops),
         "artifacts": artifacts_payload,
+        "logs": provenance.logs,
     }
 
 
@@ -594,10 +636,16 @@ def _apply_tabular_ops(
     df: pd.DataFrame,
     ops: Sequence[Operation],
     out_dir: Path | None = None,
+    provenance: "_ProvenanceRun | None" = None,
 ) -> tuple[pd.DataFrame, List[Dict[str, Any]]]:
     working = df.copy()
     new_columns: List[Dict[str, Any]] = []
     provenance_keys: set[str] = set()
+    provenance_records: dict[Any, Any] = {}
+
+    if provenance is not None:
+        for row_index, (idx, row) in enumerate(working.iterrows()):
+            provenance_records[idx] = provenance.start_record(row_index, row.to_dict())
 
     for op in ops:
         params = _operation_params(op)
@@ -625,10 +673,21 @@ def _apply_tabular_ops(
                 try:
                     result = run_operation(row_dict, op.kind, params, out_dir=out_dir)
                 except Exception as exc:
+                    record_entry = provenance_records.get(idx)
+                    if provenance is not None and record_entry is not None:
+                        provenance.log(
+                            "ERROR",
+                            f"summarize failed for row {idx}",
+                            record_entry=record_entry,
+                            context={"error": str(exc), "field": field},
+                        )
                     raise HTTPException(status_code=500, detail=str(exc)) from exc
                 results.append(result)
                 indices.append(idx)
                 new_column_names.update(result.keys())
+                record_entry = provenance_records.get(idx)
+                if provenance is not None and record_entry is not None and result:
+                    provenance.record_operation(record_entry, op.kind, params, result)
 
             for column in sorted(new_column_names):
                 if column not in working.columns:
@@ -664,15 +723,36 @@ def _apply_tabular_ops(
                 )
 
             output_col = params.get("output_field") or f"{field}_classification"
+            classification_results: List[tuple[Any, str]] = []
 
-            def classify_value(value: Any) -> str:
+            for idx, row in working.iterrows():
+                value = row[field]
                 text = "" if pd.isna(value) else str(value)
                 try:
-                    return preview_classify(text, labels, params)
+                    label_value = preview_classify(text, labels, params)
                 except RuntimeError as exc:
+                    record_entry = provenance_records.get(idx)
+                    if provenance is not None and record_entry is not None:
+                        provenance.log(
+                            "ERROR",
+                            f"classify failed for row {idx}",
+                            record_entry=record_entry,
+                            context={"error": str(exc), "field": field},
+                        )
                     raise HTTPException(status_code=500, detail=str(exc)) from exc
+                classification_results.append((idx, label_value))
+                record_entry = provenance_records.get(idx)
+                if provenance is not None and record_entry is not None:
+                    provenance.record_operation(
+                        record_entry,
+                        op.kind,
+                        params,
+                        {output_col: label_value},
+                    )
 
-            working[output_col] = working[field].apply(classify_value)
+            working.loc[:, output_col] = pd.NA
+            for idx, label_value in classification_results:
+                working.at[idx, output_col] = label_value
             new_columns.append(
                 {
                     "name": output_col,
@@ -687,6 +767,11 @@ def _apply_tabular_ops(
         keys = sorted(provenance_keys)
         bump_frequency(keys)
         bump_recency(keys)
+
+    if provenance is not None:
+        for idx, record_entry in provenance_records.items():
+            row_values = working.loc[idx].to_dict() if idx in working.index else {}
+            provenance.finish_record(record_entry, row_values)
 
     return working, new_columns
 
