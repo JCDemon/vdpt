@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,9 @@ from ..ops.registry import get_handler
 from ..types import LogEntry, ProvenanceEdge, ProvenanceNode
 
 # Ensure operation handlers register themselves on import.
+from ..ops import embed as _embed_ops  # noqa: F401
 from ..ops import image_ops as _image_ops  # noqa: F401
+from ..ops.cluster import hdbscan_cluster, umap_reduce
 from ..ops.text import summarize as _text_summarize  # noqa: F401
 
 
@@ -232,14 +234,23 @@ def preview_dataset(
     processed_records: List[Dict[str, Any]] = []
     schema_new_columns: List[str] = []
     captions: List[str] = []
+    new_columns_seen: set[str] = set()
+    base_columns = set(records[0].keys()) if records else set()
+
+    embedding_store: dict[str, List[np.ndarray | None]] = {}
+    umap_results: dict[str, List[Optional[np.ndarray]]] = {}
+    record_entries: List[dict[str, Any]] = []
+    artifacts: Dict[str, str] = {}
 
     op_kinds = [op.get("kind") for op in ops]
     logger.debug("preview_dataset operations=%s", op_kinds)
 
     for index, original in enumerate(records):
         record = dict(original)
-        errors: List[str] = []
+        record_errors = _ensure_error_list(record)
+        record["error"] = record_errors
         record_entry = provenance.start_record(index, dict(original))
+        record_entries.append(record_entry)
 
         for op in ops:
             kind = op.get("kind")
@@ -256,7 +267,8 @@ def preview_dataset(
                         op_result = run_operation(record, kind, params)
                     except Exception as exc:  # pragma: no cover - defensive
                         logger.exception("summarize preview failed for column '%s'", column_name)
-                        errors.append(f"summarize failed: {exc}")
+                        message = f"summarize failed: {exc}"
+                        record_errors.append(message)
                         provenance.log(
                             "ERROR",
                             f"summarize failed for column '{column_name}'",
@@ -271,8 +283,9 @@ def preview_dataset(
                         provenance.record_operation(record_entry, kind, params, op_result)
 
                 record[column_name] = summary_value
-                if column_name not in schema_new_columns:
+                if column_name not in base_columns and column_name not in new_columns_seen:
                     schema_new_columns.append(column_name)
+                    new_columns_seen.add(column_name)
             elif dataset_kind == "images" and kind == "img_caption":
                 caption_value = ""
                 try:
@@ -281,7 +294,8 @@ def preview_dataset(
                     logger.exception(
                         "image caption preview failed for record '%s'", record.get("id")
                     )
-                    errors.append(f"img_caption failed: {exc}")
+                    message = f"img_caption failed: {exc}"
+                    record_errors.append(message)
                     provenance.log(
                         "ERROR",
                         "img_caption failed",
@@ -297,27 +311,242 @@ def preview_dataset(
                 record["caption"] = caption_value
                 if caption_value:
                     captions.append(caption_value)
-                if "caption" not in schema_new_columns:
+                if "caption" not in base_columns and "caption" not in new_columns_seen:
                     schema_new_columns.append("caption")
+                    new_columns_seen.add("caption")
+            elif kind == "field":
+                source_field = str(params.get("field") or params.get("name") or "")
+                if not source_field:
+                    message = "field operation requires 'field'"
+                    record_errors.append(message)
+                    provenance.log("ERROR", message, record_entry=record_entry)
+                    continue
+                output_field = str(params.get("output_field") or source_field)
+                value = record.get(source_field)
+                record[output_field] = value
+                provenance.record_operation(record_entry, kind, params, {output_field: value})
+                if output_field not in base_columns and output_field not in new_columns_seen:
+                    schema_new_columns.append(output_field)
+                    new_columns_seen.add(output_field)
+            elif dataset_kind == "csv" and kind == "embed_text":
+                field = str(params.get("field") or params.get("source") or "")
+                output_field = str(params.get("output_field") or "embedding")
+                embeddings_list = embedding_store.setdefault(output_field, [])
+                if not field:
+                    message = "embed_text requires 'field'"
+                    record_errors.append(message)
+                    provenance.log("ERROR", message, record_entry=record_entry)
+                    record[output_field] = None
+                    embeddings_list.append(None)
+                    continue
+                try:
+                    op_result = run_operation(record, kind, params)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("embed_text failed for field '%s'", field)
+                    message = f"embed_text failed: {exc}"
+                    record_errors.append(message)
+                    provenance.log(
+                        "ERROR",
+                        "embed_text failed",
+                        record_entry=record_entry,
+                        context={"error": str(exc), "field": field},
+                    )
+                    record[output_field] = None
+                    embeddings_list.append(None)
+                else:
+                    vector_array = _vector_from_output(op_result.get(output_field))
+                    if vector_array is None:
+                        record[output_field] = None
+                        embeddings_list.append(None)
+                    else:
+                        embeddings_list.append(vector_array)
+                        record[output_field] = vector_array.astype(np.float32).tolist()
+                    if op_result:
+                        provenance.record_operation(record_entry, kind, params, op_result)
+                if output_field not in base_columns and output_field not in new_columns_seen:
+                    schema_new_columns.append(output_field)
+                    new_columns_seen.add(output_field)
+            elif dataset_kind == "images" and kind == "embed_image":
+                field = str(params.get("field") or params.get("path") or "image_path")
+                output_field = str(params.get("output_field") or "embedding")
+                embeddings_list = embedding_store.setdefault(output_field, [])
+                value = record.get(field)
+                if not value:
+                    message = "embed_image requires an image path"
+                    record_errors.append(message)
+                    provenance.log(
+                        "ERROR",
+                        message,
+                        record_entry=record_entry,
+                        context={"field": field},
+                    )
+                    record[output_field] = None
+                    embeddings_list.append(None)
+                    continue
+                try:
+                    op_result = run_operation(record, kind, params)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("embed_image failed for path '%s'", value)
+                    message = f"embed_image failed: {exc}"
+                    record_errors.append(message)
+                    provenance.log(
+                        "ERROR",
+                        "embed_image failed",
+                        record_entry=record_entry,
+                        context={"error": str(exc), "field": field},
+                    )
+                    record[output_field] = None
+                    embeddings_list.append(None)
+                else:
+                    vector_array = _vector_from_output(op_result.get(output_field))
+                    if vector_array is None:
+                        record[output_field] = None
+                        embeddings_list.append(None)
+                    else:
+                        embeddings_list.append(vector_array)
+                        record[output_field] = vector_array.astype(np.float32).tolist()
+                    if op_result:
+                        provenance.record_operation(record_entry, kind, params, op_result)
+                if output_field not in base_columns and output_field not in new_columns_seen:
+                    schema_new_columns.append(output_field)
+                    new_columns_seen.add(output_field)
 
-        existing_errors = record.get("error")
-        merged_errors: List[str] = []
-        if isinstance(existing_errors, list):
-            merged_errors.extend(str(err) for err in existing_errors)
-        elif existing_errors:
-            merged_errors.append(str(existing_errors))
-        merged_errors.extend(errors)
-        record["error"] = merged_errors
-        if merged_errors:
-            for err in merged_errors:
+        if record_errors:
+            for err in record_errors:
                 provenance.log("WARNING", err, record_entry=record_entry)
-
-        provenance.finish_record(record_entry, record)
 
         processed_records.append(record)
 
-    artifacts: Dict[str, str] = {}
-    if len(captions) > 0:
+    for op in ops:
+        kind = op.get("kind")
+        params = op.get("params") or {}
+
+        if kind == "umap":
+            source_field = str(params.get("source") or params.get("field") or "embedding")
+            output_field = str(params.get("output_field") or "umap")
+            embeddings_list = embedding_store.get(source_field)
+            coords_by_record: List[Optional[np.ndarray]] = [None] * len(processed_records)
+
+            if embeddings_list:
+                valid = [(idx, vec) for idx, vec in enumerate(embeddings_list) if vec is not None]
+                if len(valid) >= 2:
+                    matrix = np.vstack([vec for _, vec in valid])
+                    coords_valid = umap_reduce(
+                        matrix,
+                        n_neighbors=_coerce_positive_int(
+                            params.get("n_neighbors"), default=15, minimum=2
+                        ),
+                        min_dist=_coerce_float(params.get("min_dist"), default=0.1, minimum=0.0),
+                        metric=str(params.get("metric") or "cosine"),
+                    )
+                    coords_valid = np.asarray(coords_valid, dtype=np.float32)
+                    for (idx, _), coord in zip(valid, coords_valid):
+                        coords_by_record[idx] = coord.astype(np.float32)
+                elif len(valid) == 1:
+                    coords_by_record[valid[0][0]] = np.array([0.0, 0.0], dtype=np.float32)
+            else:
+                message = f"umap requires embeddings for '{source_field}'"
+                for record, record_entry in zip(processed_records, record_entries):
+                    _append_error(record, message)
+                    provenance.log(
+                        "ERROR",
+                        message,
+                        record_entry=record_entry,
+                        context={"source": source_field},
+                    )
+                    provenance.log("WARNING", message, record_entry=record_entry)
+                continue
+
+            umap_results[output_field] = coords_by_record
+            for idx, coord in enumerate(coords_by_record):
+                if coord is None:
+                    processed_records[idx][output_field] = None
+                else:
+                    processed_records[idx][output_field] = [float(coord[0]), float(coord[1])]
+            for idx, record_entry in enumerate(record_entries):
+                provenance.record_operation(
+                    record_entry,
+                    kind,
+                    params,
+                    {output_field: processed_records[idx].get(output_field)},
+                )
+            if output_field not in base_columns and output_field not in new_columns_seen:
+                schema_new_columns.append(output_field)
+                new_columns_seen.add(output_field)
+            if any(coord is not None for coord in coords_by_record):
+                coords_array = _coords_array(coords_by_record)
+                filename = run_dir / f"{_sanitize_name(output_field)}_umap.npy"
+                np.save(filename, coords_array)
+                artifacts[_artifact_key("umap", output_field)] = str(filename)
+
+        elif kind == "hdbscan":
+            source_field = str(params.get("source") or "umap")
+            output_field = str(params.get("output_field") or "cluster")
+            coords_by_record = umap_results.get(source_field)
+            labels_by_record: List[int] = [-1] * len(processed_records)
+
+            if coords_by_record:
+                valid = [
+                    (idx, coord) for idx, coord in enumerate(coords_by_record) if coord is not None
+                ]
+                if valid:
+                    matrix = np.vstack([coord for _, coord in valid])
+                    labels_valid = hdbscan_cluster(
+                        matrix,
+                        min_cluster_size=_coerce_positive_int(
+                            params.get("min_cluster_size"), default=10, minimum=2
+                        ),
+                        min_samples=_coerce_optional_int(params.get("min_samples")),
+                        metric=str(params.get("metric") or "euclidean"),
+                    )
+                    labels_valid = np.asarray(labels_valid, dtype=np.int32)
+                    for (idx, _), label in zip(valid, labels_valid):
+                        labels_by_record[idx] = int(label)
+            else:
+                message = f"hdbscan requires UMAP coordinates from '{source_field}'"
+                for record, record_entry in zip(processed_records, record_entries):
+                    _append_error(record, message)
+                    provenance.log(
+                        "ERROR",
+                        message,
+                        record_entry=record_entry,
+                        context={"source": source_field},
+                    )
+                    provenance.log("WARNING", message, record_entry=record_entry)
+                continue
+
+            for idx, label in enumerate(labels_by_record):
+                processed_records[idx][output_field] = int(label)
+                provenance.record_operation(
+                    record_entries[idx], kind, params, {output_field: int(label)}
+                )
+            if output_field not in base_columns and output_field not in new_columns_seen:
+                schema_new_columns.append(output_field)
+                new_columns_seen.add(output_field)
+            labels_array = np.asarray(labels_by_record, dtype=np.int32)
+            filename = run_dir / f"{_sanitize_name(output_field)}_hdbscan.npy"
+            np.save(filename, labels_array)
+            artifacts[_artifact_key("hdbscan", output_field)] = str(filename)
+
+    embedding_arrays: Dict[str, np.ndarray] = {}
+    for name, vectors in embedding_store.items():
+        dim = next((vec.shape[-1] for vec in vectors if vec is not None), None)
+        if dim is None:
+            continue
+        filler = np.full((dim,), np.nan, dtype=np.float32)
+        stacked = np.vstack(
+            [vec.astype(np.float32) if vec is not None else filler for vec in vectors]
+        )
+        embedding_arrays[_sanitize_name(name)] = stacked
+    if embedding_arrays:
+        embeddings_path = run_dir / "embeddings.npz"
+        np.savez(embeddings_path, **embedding_arrays)
+        artifacts["embeddings"] = str(embeddings_path)
+
+    for record_entry, record in zip(record_entries, processed_records):
+        provenance.finish_record(record_entry, record)
+
+    if captions:
         captions_path = run_dir / "captions.json"
         captions_path.write_text(json.dumps(captions, ensure_ascii=False, indent=2))
 
@@ -341,6 +570,85 @@ def preview_dataset(
         "artifacts": artifacts,
         "logs": provenance.logs,
     }
+
+
+def _ensure_error_list(record: Dict[str, Any]) -> List[str]:
+    existing = record.get("error")
+    if isinstance(existing, list):
+        return [str(err) for err in existing]
+    if existing:
+        return [str(existing)]
+    return []
+
+
+def _append_error(record: Dict[str, Any], message: str) -> List[str]:
+    errors = record.get("error")
+    if isinstance(errors, list):
+        errors.append(message)
+        return errors
+    if errors:
+        new_errors = [str(errors), message]
+    else:
+        new_errors = [message]
+    record["error"] = new_errors
+    return new_errors
+
+
+def _sanitize_name(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_")
+    return sanitized or "result"
+
+
+def _artifact_key(prefix: str, name: str) -> str:
+    return prefix if name == prefix else f"{prefix}_{name}"
+
+
+def _vector_from_output(value: Any) -> np.ndarray | None:
+    if value is None:
+        return None
+    array = np.asarray(value, dtype=np.float32)
+    if array.ndim == 0:
+        return None
+    return array.reshape(-1).astype(np.float32)
+
+
+def _coords_array(coords: Sequence[Optional[np.ndarray]]) -> np.ndarray:
+    if not coords:
+        return np.zeros((0, 2), dtype=np.float32)
+    result = np.full((len(coords), 2), np.nan, dtype=np.float32)
+    for idx, coord in enumerate(coords):
+        if coord is not None and coord.size >= 2:
+            result[idx, :] = coord[:2]
+    return result
+
+
+def _coerce_positive_int(value: Any, *, default: int, minimum: int) -> int:
+    if value is None:
+        return max(default, minimum)
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return max(default, minimum)
+    return max(coerced, minimum)
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: Any, *, default: float, minimum: float) -> float:
+    if value is None:
+        return max(default, minimum)
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return max(default, minimum)
+    return max(coerced, minimum)
 
 
 def _preview_segment(params: dict) -> dict:

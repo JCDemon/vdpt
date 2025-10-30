@@ -5,3 +5,6 @@ numpy>=1.26.0,<2.0.0
 Pillow>=10.4.0,<13.0.0
 pandas>=2.1.0,<3.0.0
 dashscope>=1.15.0
+open-clip-torch>=2.24.0
+umap-learn>=0.5.6
+hdbscan>=0.8.33
