@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
+
+from pydantic import BaseModel, Field
 
 
 @dataclass
@@ -45,3 +47,30 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
+
+
+class ProvenanceNode(BaseModel):
+    """Node within a provenance graph using a PROV-inspired vocabulary."""
+
+    id: str
+    type: Literal["Entity", "Activity", "Agent"]
+    label: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProvenanceEdge(BaseModel):
+    """Directed edge describing relationships between provenance nodes."""
+
+    source: str
+    target: str
+    relation: Literal["wasGeneratedBy", "used"]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LogEntry(BaseModel):
+    """Structured log entry captured during a preview or execute run."""
+
+    ts: datetime
+    level: str
+    message: str
+    context: Dict[str, Any] = Field(default_factory=dict)

@@ -919,6 +919,199 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
         st.info("Artifact not readable from UI process; path is shown for reference.")
 
 
+# --- helpers: operation details ---
+
+
+def _sanitize_streamlit_key(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "-" for ch in value)
+
+
+@st.cache_data(show_spinner=False)
+def _load_provenance_payload(path: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    return payload, text
+
+
+def _stringify_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            return str(value)
+    return str(value)
+
+
+def _logs_dataframe(entries: Iterable[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for entry in entries or []:
+        ts = entry.get("ts")
+        level = entry.get("level")
+        message = entry.get("message")
+        context = entry.get("context")
+        rows.append(
+            {
+                "ts": _stringify_value(ts),
+                "level": level or "",
+                "message": message or "",
+                "context": _stringify_value(context),
+            }
+        )
+    if not rows:
+        return pd.DataFrame(columns=["ts", "level", "message", "context"])
+    return pd.DataFrame(rows)
+
+
+def _format_logs_for_download(entries: Iterable[Dict[str, Any]]) -> str:
+    lines: List[str] = []
+    for entry in entries or []:
+        ts = _stringify_value(entry.get("ts"))
+        level = entry.get("level") or ""
+        message = entry.get("message") or ""
+        context_text = _stringify_value(entry.get("context"))
+        parts = [part for part in (ts, level, message) if part]
+        line = " ".join(parts)
+        if context_text:
+            line = f"{line} | {context_text}" if line else context_text
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _key_with_suffix(base: str, suffix: str) -> str:
+    sanitized = _sanitize_streamlit_key(base)
+    return f"{sanitized}-{suffix}-{uuid4()}"
+
+
+def render_operation_detail_drawers(section_label: str, payload: Dict[str, Any]) -> None:
+    artifacts = payload.get("artifacts") if isinstance(payload, dict) else None
+    if not isinstance(artifacts, dict):
+        return
+
+    provenance_path = artifacts.get("provenance")
+    if not provenance_path:
+        st.info("No provenance artifact available for this run.")
+        return
+
+    provenance_data, provenance_text = _load_provenance_payload(str(provenance_path))
+    if provenance_data is None:
+        st.warning(f"Unable to load provenance details from {provenance_path}.")
+        return
+
+    st.subheader("Operation details")
+    download_cols = st.columns(2)
+    key_base = f"{section_label}-{provenance_path}"
+
+    if provenance_text:
+        download_cols[0].download_button(
+            label="Download provenance.json",
+            data=provenance_text,
+            file_name="provenance.json",
+            mime="application/json",
+            use_container_width=True,
+            key=_key_with_suffix(key_base, "prov"),
+        )
+    else:
+        download_cols[0].caption("Provenance file not readable.")
+
+    log_entries = payload.get("logs") or provenance_data.get("logs") or []
+    logs_text = _format_logs_for_download(log_entries)
+    if logs_text:
+        download_cols[1].download_button(
+            label="Download logs.txt",
+            data=logs_text,
+            file_name="logs.txt",
+            mime="text/plain",
+            use_container_width=True,
+            key=_key_with_suffix(key_base, "logs"),
+        )
+    else:
+        download_cols[1].caption("No logs available.")
+
+    if log_entries:
+        st.caption("Run logs")
+        run_logs_df = _logs_dataframe(log_entries)
+        if not run_logs_df.empty:
+            st.dataframe(run_logs_df)
+
+    records = provenance_data.get("records") or []
+    if not records:
+        st.info("No per-record provenance entries available.")
+        return
+
+    for record in records:
+        row_index = record.get("row_index")
+        label = f"Row {row_index}" if row_index is not None else "Record"
+        with st.expander(f"Details · {label}"):
+            inputs = record.get("inputs") or {}
+            st.markdown("**Inputs**")
+            if inputs:
+                input_rows = [
+                    {"field": str(key), "value": _stringify_value(value)}
+                    for key, value in inputs.items()
+                ]
+                st.table(pd.DataFrame(input_rows))
+            else:
+                st.caption("No inputs recorded.")
+
+            parameters = record.get("parameters") or []
+            st.markdown("**Parameters**")
+            if parameters:
+                parameter_rows = [
+                    {
+                        "kind": param.get("kind"),
+                        "params": _stringify_value(param.get("params")),
+                    }
+                    for param in parameters
+                ]
+                st.table(pd.DataFrame(parameter_rows))
+            else:
+                st.caption("No parameters recorded.")
+
+            outputs = record.get("outputs") or {}
+            st.markdown("**Outputs**")
+            if outputs:
+                output_rows = [
+                    {"field": str(key), "value": _stringify_value(value)}
+                    for key, value in outputs.items()
+                ]
+                st.table(pd.DataFrame(output_rows))
+            else:
+                st.caption("No outputs recorded.")
+
+            provenance_graph = record.get("provenance") or {}
+            graph_cols = st.columns(2)
+            nodes = provenance_graph.get("nodes") or []
+            graph_cols[0].markdown("**Nodes**")
+            if nodes:
+                graph_cols[0].dataframe(pd.DataFrame(nodes))
+            else:
+                graph_cols[0].caption("No nodes recorded.")
+            edges = provenance_graph.get("edges") or []
+            graph_cols[1].markdown("**Edges**")
+            if edges:
+                graph_cols[1].dataframe(pd.DataFrame(edges))
+            else:
+                graph_cols[1].caption("No edges recorded.")
+
+            record_logs = record.get("logs") or []
+            st.markdown("**Logs**")
+            record_logs_df = _logs_dataframe(record_logs)
+            if not record_logs_df.empty:
+                st.table(record_logs_df)
+            else:
+                st.caption("No logs for this record.")
+
+
 def _extract_artifact_run_identifier(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -1665,6 +1858,8 @@ with main_col:
         if st.session_state.get("selected_run_id") and preview_artifacts and not preview_displayed:
             st.caption("Preview artifacts hidden by active run filter.")
 
+        render_operation_detail_drawers("preview", preview)
+
     if st.session_state.execute_result:
         st.markdown("### Execution results")
         result = st.session_state.execute_result
@@ -1692,6 +1887,8 @@ with main_col:
         artifacts_shown = render_artifacts_section(result)
         if st.session_state.get("selected_run_id") and artifacts and not artifacts_shown:
             st.info(f"No execution artifacts matched run {st.session_state.selected_run_id}.")
+
+        render_operation_detail_drawers("execute", result)
 
 with provenance_col:
     st.subheader("Provenance")
