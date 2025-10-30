@@ -390,7 +390,10 @@ def _run_tree_nodes() -> List[Dict[str, Any]]:
 def _run_summary_to_node(summary: RunSummary) -> Dict[str, Any]:
     label = summary.run_id
     badge = _format_badge(
-        [summary.status, f"{summary.num_artifacts} artifacts" if summary.num_artifacts is not None else None]
+        [
+            summary.status,
+            f"{summary.num_artifacts} artifacts" if summary.num_artifacts is not None else None,
+        ]
     )
     subtitle = None
     if summary.started_at:
@@ -945,14 +948,10 @@ def render_artifacts_section(resp_json: Any) -> bool:
     selected_run = st.session_state.get("selected_run_id")
     run_identifier = _extract_artifact_run_identifier(resp_json)
     if selected_run and run_identifier and selected_run != run_identifier:
-        st.caption(
-            f"Run filter active: {selected_run}. Artifacts for {run_identifier} hidden."
-        )
+        st.caption(f"Run filter active: {selected_run}. Artifacts for {run_identifier} hidden.")
         return False
     if selected_run and not run_identifier:
-        st.caption(
-            f"Run filter active: {selected_run}. Artifacts with no run metadata hidden."
-        )
+        st.caption(f"Run filter active: {selected_run}. Artifacts with no run metadata hidden.")
         return False
 
     st.subheader("Artifacts")
@@ -1663,11 +1662,7 @@ with main_col:
                 preview_displayed = render_artifacts_section(preview)
         else:
             preview_displayed = render_artifacts_section(preview)
-        if (
-            st.session_state.get("selected_run_id")
-            and preview_artifacts
-            and not preview_displayed
-        ):
+        if st.session_state.get("selected_run_id") and preview_artifacts and not preview_displayed:
             st.caption("Preview artifacts hidden by active run filter.")
 
     if st.session_state.execute_result:
@@ -1695,14 +1690,8 @@ with main_col:
 
         st.json(result)
         artifacts_shown = render_artifacts_section(result)
-        if (
-            st.session_state.get("selected_run_id")
-            and artifacts
-            and not artifacts_shown
-        ):
-            st.info(
-                f"No execution artifacts matched run {st.session_state.selected_run_id}."
-            )
+        if st.session_state.get("selected_run_id") and artifacts and not artifacts_shown:
+            st.info(f"No execution artifacts matched run {st.session_state.selected_run_id}.")
 
 with provenance_col:
     st.subheader("Provenance")
