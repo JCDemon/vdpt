@@ -1204,12 +1204,16 @@ def render_cluster_view(
         )
 
     st.markdown("#### Cluster view")
-    st.altair_chart((points & detail_chart).resolve_scale(color="independent"), use_container_width=True)
+    st.altair_chart(
+        (points & detail_chart).resolve_scale(color="independent"), use_container_width=True
+    )
     st.caption("Click a point to view the corresponding record.")
 
     if artifacts:
         cluster_artifacts = [
-            f"{key}: {val}" for key, val in artifacts.items() if str(key).startswith(("umap", "hdbscan"))
+            f"{key}: {val}"
+            for key, val in artifacts.items()
+            if str(key).startswith(("umap", "hdbscan"))
         ]
         if cluster_artifacts:
             st.caption("Artifacts: " + ", ".join(cluster_artifacts))

@@ -486,7 +486,9 @@ def preview_dataset(
             labels_by_record: List[int] = [-1] * len(processed_records)
 
             if coords_by_record:
-                valid = [(idx, coord) for idx, coord in enumerate(coords_by_record) if coord is not None]
+                valid = [
+                    (idx, coord) for idx, coord in enumerate(coords_by_record) if coord is not None
+                ]
                 if valid:
                     matrix = np.vstack([coord for _, coord in valid])
                     labels_valid = hdbscan_cluster(
@@ -532,9 +534,9 @@ def preview_dataset(
         if dim is None:
             continue
         filler = np.full((dim,), np.nan, dtype=np.float32)
-        stacked = np.vstack([
-            vec.astype(np.float32) if vec is not None else filler for vec in vectors
-        ])
+        stacked = np.vstack(
+            [vec.astype(np.float32) if vec is not None else filler for vec in vectors]
+        )
         embedding_arrays[_sanitize_name(name)] = stacked
     if embedding_arrays:
         embeddings_path = run_dir / "embeddings.npz"

@@ -22,7 +22,9 @@ _DEVICE: Optional[torch.device] = None
 def _load_model() -> tuple[torch.nn.Module, Any, Any, torch.device]:
     global _MODEL, _TOKENIZER, _PREPROCESS, _DEVICE
     if _MODEL is None or _TOKENIZER is None or _PREPROCESS is None or _DEVICE is None:
-        model, _, preprocess = open_clip.create_model_and_transforms(_MODEL_NAME, pretrained=_PRETRAINED)
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            _MODEL_NAME, pretrained=_PRETRAINED
+        )
         tokenizer = open_clip.get_tokenizer(_MODEL_NAME)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
