@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
+import altair as alt
+import math
 import pandas as pd
 import requests
 import streamlit as st
@@ -1112,6 +1114,226 @@ def render_operation_detail_drawers(section_label: str, payload: Dict[str, Any])
                 st.caption("No logs for this record.")
 
 
+def render_cluster_view(
+    records: List[Dict[str, Any]],
+    *,
+    key_prefix: str,
+    dataset_kind: str,
+    artifacts: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if not records:
+        return False
+
+    umap_field = _detect_umap_field(records)
+    cluster_field = _detect_cluster_field(records)
+    if not umap_field or not cluster_field:
+        return False
+
+    label_field = _guess_label_field(records, dataset_kind)
+    scatter_rows: List[Dict[str, Any]] = []
+    detail_rows: List[Dict[str, Any]] = []
+
+    for idx, record in enumerate(records):
+        coords = record.get(umap_field)
+        if not _valid_umap_point(coords):
+            continue
+        x_val = float(coords[0])
+        y_val = float(coords[1])
+        cluster_value = record.get(cluster_field)
+        scatter_rows.append(
+            {
+                "row_index": idx,
+                "umap_x": x_val,
+                "umap_y": y_val,
+                "cluster_label": _format_cluster_label(cluster_value),
+                "label": _extract_label(record, label_field),
+            }
+        )
+        detail_rows.extend(
+            _detail_rows_for_record(
+                idx,
+                record,
+                skip_keys={umap_field, cluster_field, "embedding"},
+            )
+        )
+
+    if not scatter_rows:
+        return False
+
+    scatter_df = pd.DataFrame(scatter_rows)
+    scatter_df["cluster_label"] = scatter_df["cluster_label"].astype(str)
+
+    selection = alt.selection_point(
+        fields=["row_index"],
+        name=f"{key_prefix}_cluster_select",
+    )
+    tooltip_fields = ["row_index", "cluster_label"]
+    if "label" in scatter_df.columns:
+        tooltip_fields.append("label")
+
+    points = (
+        alt.Chart(scatter_df)
+        .mark_circle(size=80)
+        .encode(
+            x=alt.X("umap_x:Q", title="UMAP 1"),
+            y=alt.Y("umap_y:Q", title="UMAP 2"),
+            color=alt.Color("cluster_label:N", title="Cluster"),
+            tooltip=tooltip_fields,
+            opacity=alt.condition(selection, alt.value(0.9), alt.value(0.3)),
+        )
+        .add_params(selection)
+    )
+
+    if detail_rows:
+        detail_df = pd.DataFrame(detail_rows)
+        detail_chart = (
+            alt.Chart(detail_df)
+            .transform_filter(selection)
+            .mark_text(align="left")
+            .encode(
+                y=alt.Y("order:O", axis=None),
+                text="display:N",
+            )
+            .properties(height=max(140, int(detail_df["order"].max() + 1) * 18))
+        )
+    else:
+        detail_chart = (
+            alt.Chart(pd.DataFrame({"display": ["Select a point to view details."]}))
+            .mark_text(align="left")
+            .encode(text="display:N")
+        )
+
+    st.markdown("#### Cluster view")
+    st.altair_chart((points & detail_chart).resolve_scale(color="independent"), use_container_width=True)
+    st.caption("Click a point to view the corresponding record.")
+
+    if artifacts:
+        cluster_artifacts = [
+            f"{key}: {val}" for key, val in artifacts.items() if str(key).startswith(("umap", "hdbscan"))
+        ]
+        if cluster_artifacts:
+            st.caption("Artifacts: " + ", ".join(cluster_artifacts))
+    return True
+
+
+def _detect_umap_field(records: List[Dict[str, Any]]) -> Optional[str]:
+    if not records:
+        return None
+    preferred = ("umap", "umap_coords", "coords")
+    for field in preferred:
+        if any(_valid_umap_point(record.get(field)) for record in records):
+            return field
+    for key in records[0].keys():
+        if _valid_umap_point(records[0].get(key)):
+            return key
+    return None
+
+
+def _detect_cluster_field(records: List[Dict[str, Any]]) -> Optional[str]:
+    if not records:
+        return None
+    preferred = ("cluster", "cluster_id", "cluster_label")
+    for field in preferred:
+        if any(field in record for record in records):
+            if any(record.get(field) is not None for record in records):
+                return field
+    for key in records[0].keys():
+        if "cluster" in key.lower():
+            return key
+    return None
+
+
+def _valid_umap_point(value: Any) -> bool:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return False
+    try:
+        x_val = float(value[0])
+        y_val = float(value[1])
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(x_val) and math.isfinite(y_val)
+
+
+def _guess_label_field(records: List[Dict[str, Any]], dataset_kind: str) -> Optional[str]:
+    if not records:
+        return None
+    priority = ["text", "caption", "title", "headline"]
+    if dataset_kind == "images":
+        priority.insert(0, "image_path")
+    for field in priority:
+        if any(field in record and record[field] for record in records):
+            return field
+    for key, value in records[0].items():
+        if isinstance(value, str) and value:
+            return key
+    return None
+
+
+def _extract_label(record: Dict[str, Any], field: Optional[str]) -> str:
+    if not field:
+        return ""
+    value = record.get(field)
+    if value is None:
+        return ""
+    text = str(value)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _detail_rows_for_record(
+    row_index: int,
+    record: Dict[str, Any],
+    *,
+    skip_keys: Optional[set[str]] = None,
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    skip = set(skip_keys or set())
+    skip.update({"error", "logs"})
+    order = 0
+    for key, value in record.items():
+        if key in skip:
+            continue
+        display_value = _format_detail_value(value)
+        rows.append({"row_index": row_index, "order": order, "display": f"{key}: {display_value}"})
+        order += 1
+        if order >= limit:
+            break
+    return rows
+
+
+def _format_detail_value(value: Any) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    if isinstance(value, (int, str)):
+        text = str(value)
+        return text if len(text) <= 120 else text[:117] + "..."
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        if len(value) > 12:
+            return f"[{len(value)} items]"
+        return "[" + ", ".join(_format_detail_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        try:
+            serialized = json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            serialized = str(value)
+        return serialized if len(serialized) <= 120 else serialized[:117] + "..."
+    return str(value)
+
+
+def _format_cluster_label(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        cluster_int = int(value)
+        return "Noise (-1)" if cluster_int == -1 else f"Cluster {cluster_int}"
+    if value is None:
+        return "Unassigned"
+    text = str(value)
+    return text if text else "Unassigned"
+
+
 def _extract_artifact_run_identifier(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -1834,6 +2056,14 @@ with main_col:
         st.markdown("### Preview output")
         preview = st.session_state.preview_result
         records = preview.get("records") or []
+        preview_artifacts = preview.get("artifacts") if isinstance(preview, dict) else None
+        if records:
+            render_cluster_view(
+                records,
+                key_prefix="preview",
+                dataset_kind=dataset_kind,
+                artifacts=preview_artifacts,
+            )
         if records:
             if dataset_kind == "images":
                 _render_image_preview_table(records, st.session_state.plan_ops)
@@ -1845,7 +2075,6 @@ with main_col:
         if schema:
             st.json(schema)
         st.json(preview)
-        preview_artifacts = preview.get("artifacts") if isinstance(preview, dict) else None
         preview_displayed = False
         if dataset_kind == "images":
             captions_path = None
@@ -1865,6 +2094,14 @@ with main_col:
         result = st.session_state.execute_result
         artifacts = result.get("artifacts") or {}
         run_dir = _extract_run_directory(artifacts)
+        records = result.get("records") or []
+        if records:
+            render_cluster_view(
+                records,
+                key_prefix="execute",
+                dataset_kind=dataset_kind,
+                artifacts=artifacts,
+            )
 
         if result.get("ok"):
             st.success("Execution finished")

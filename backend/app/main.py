@@ -46,6 +46,11 @@ class Operation(BaseModel):
         "summarize",
         "classify",
         "transform",
+        "field",
+        "embed_text",
+        "embed_image",
+        "umap",
+        "hdbscan",
         "img_resize",
         "img_caption",
     ]
