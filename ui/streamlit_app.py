@@ -8,12 +8,15 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
 import pandas as pd
 import requests
 import streamlit as st
+
+from backend.app.run_index import list_runs
+from backend.app.types import RunSummary
 
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
 DEFAULT_LABEL_OPTIONS = ["positive", "negative", "neutral"]
@@ -85,6 +88,25 @@ st.set_page_config(page_title="VDPT Preview & Execute", layout="wide")
 st.title("VDPT Preview & Execution")
 
 
+_TREE_SECTIONS: Tuple[Tuple[str, str], ...] = (
+    ("datasets", "Datasets"),
+    ("plans", "Plans"),
+    ("runs", "Runs"),
+    ("artifacts", "Artifacts"),
+)
+
+
+def _ensure_project_tree_state() -> None:
+    if "project_tree" not in st.session_state:
+        st.session_state.project_tree = {
+            "expanded": {section: True for section, _ in _TREE_SECTIONS},
+            "selected_node": None,
+        }
+
+
+_ensure_project_tree_state()
+
+
 if "plan_ops" not in st.session_state:
     st.session_state.plan_ops = []  # type: ignore[attr-defined]
 if "sample_size" not in st.session_state:
@@ -113,6 +135,299 @@ if "provenance_freq_items" not in st.session_state:
     st.session_state.provenance_freq_items = []  # type: ignore[attr-defined]
 if "provenance_recency_items" not in st.session_state:
     st.session_state.provenance_recency_items = []  # type: ignore[attr-defined]
+if "selected_run_id" not in st.session_state:
+    st.session_state.selected_run_id = None
+
+
+def _render_project_tree_sidebar() -> None:
+    tree_state = st.session_state.project_tree
+    section_nodes: Dict[str, List[Dict[str, Any]]] = {
+        section_id: _gather_section_nodes(section_id) for section_id, _ in _TREE_SECTIONS
+    }
+    with st.sidebar:
+        st.header("Project & Tasks")
+        _handle_tree_keyboard_navigation(tree_state, section_nodes)
+        for section_id, section_label in _TREE_SECTIONS:
+            _render_tree_section(tree_state, section_nodes[section_id], section_id, section_label)
+
+
+def _render_tree_section(
+    tree_state: Dict[str, Any],
+    nodes: List[Dict[str, Any]],
+    section_id: str,
+    label: str,
+) -> None:
+    is_expanded: bool = tree_state["expanded"].get(section_id, True)
+    toggle_key = f"tree-section-toggle-{section_id}"
+    toggle_label = f"{'▼' if is_expanded else '▶'} {label}"
+    if st.sidebar.button(toggle_label, key=toggle_key, use_container_width=True):
+        tree_state["expanded"][section_id] = not is_expanded
+        st.experimental_rerun()
+        return
+
+    if not is_expanded:
+        return
+
+    section_container = st.sidebar.container()
+    if not nodes:
+        section_container.caption("No items available yet.")
+        return
+
+    for node in nodes:
+        _render_tree_node(section_container, tree_state, section_id, node)
+
+
+def _render_tree_node(
+    container: "st.delta_generator.DeltaGenerator",
+    tree_state: Dict[str, Any],
+    section_id: str,
+    node: Dict[str, Any],
+) -> None:
+    node_id = node["id"]
+    full_node_id = f"{section_id}:{node_id}"
+    selected_node = tree_state.get("selected_node")
+    is_selected = selected_node == full_node_id
+    label = node.get("label", node_id)
+    badge = node.get("badge")
+    subtitle = node.get("subtitle")
+    description = node.get("description")
+    button_label = f"{'●' if is_selected else '○'} {label}"
+    if badge:
+        button_label = f"{button_label} · {badge}"
+
+    button_key = f"tree-node-{section_id}-{node_id}"
+    if container.button(button_label, key=button_key, use_container_width=True):
+        _activate_tree_node(tree_state, section_id, node, trigger_rerun=True)
+        return
+
+    if subtitle:
+        container.caption(subtitle)
+    if description:
+        container.write(description)
+
+
+def _handle_tree_keyboard_navigation(
+    tree_state: Dict[str, Any], section_nodes: Dict[str, List[Dict[str, Any]]]
+) -> None:
+    visible_nodes: List[Tuple[str, Dict[str, Any]]] = []
+    for section_id, _ in _TREE_SECTIONS:
+        if not tree_state["expanded"].get(section_id, True):
+            continue
+        for node in section_nodes.get(section_id, []):
+            visible_nodes.append((section_id, node))
+
+    if "tree_nav_value" not in st.session_state:
+        st.session_state.tree_nav_value = ""
+
+    def _on_nav_change() -> None:
+        raw_value = st.session_state.tree_nav_value
+        st.session_state.tree_nav_value = ""
+        if not raw_value:
+            return
+        key = raw_value.strip().lower()
+        if key not in {"j", "k", "enter"}:
+            return
+        _process_tree_nav_key(tree_state, visible_nodes, key)
+
+    st.text_input(
+        "Tree keyboard navigation",
+        key="tree_nav_value",
+        label_visibility="collapsed",
+        placeholder="Focus here and press j / k / Enter",
+        on_change=_on_nav_change,
+    )
+
+
+def _process_tree_nav_key(
+    tree_state: Dict[str, Any],
+    visible_nodes: List[Tuple[str, Dict[str, Any]]],
+    key: str,
+) -> None:
+    if not visible_nodes:
+        return
+
+    selected = tree_state.get("selected_node")
+    order = [f"{section}:{node['id']}" for section, node in visible_nodes]
+    selected_index = order.index(selected) if selected in order else None
+
+    if key == "j":
+        next_index = 0 if selected_index is None else (selected_index + 1) % len(order)
+        section_id, node = visible_nodes[next_index]
+        _set_selected_tree_node(tree_state, section_id, node)
+        st.experimental_rerun()
+        return
+    if key == "k":
+        prev_index = len(order) - 1 if selected_index is None else (selected_index - 1) % len(order)
+        section_id, node = visible_nodes[prev_index]
+        _set_selected_tree_node(tree_state, section_id, node)
+        st.experimental_rerun()
+        return
+    if key == "enter":
+        target_index = 0 if selected_index is None else selected_index
+        section_id, node = visible_nodes[target_index]
+        _activate_tree_node(tree_state, section_id, node, trigger_rerun=True)
+
+
+def _set_selected_tree_node(
+    tree_state: Dict[str, Any], section_id: str, node: Dict[str, Any]
+) -> None:
+    full_node_id = f"{section_id}:{node['id']}"
+    tree_state["selected_node"] = full_node_id
+
+
+def _activate_tree_node(
+    tree_state: Dict[str, Any],
+    section_id: str,
+    node: Dict[str, Any],
+    *,
+    trigger_rerun: bool = False,
+) -> None:
+    _set_selected_tree_node(tree_state, section_id, node)
+    tree_state["active_section"] = section_id
+    tree_state["active_payload"] = node.get("payload")
+    if section_id == "runs":
+        st.session_state.selected_run_id = node.get("payload", {}).get("run_id")
+    else:
+        st.session_state.selected_run_id = None
+    if trigger_rerun:
+        st.experimental_rerun()
+
+
+def _format_badge(parts: Iterable[Optional[str]]) -> Optional[str]:
+    values = [part for part in parts if part]
+    return " · ".join(values) if values else None
+
+
+def _gather_section_nodes(section_id: str) -> List[Dict[str, Any]]:
+    if section_id == "datasets":
+        return _dataset_tree_nodes()
+    if section_id == "plans":
+        return _plan_tree_nodes()
+    if section_id == "runs":
+        return _run_tree_nodes()
+    if section_id == "artifacts":
+        return _artifact_tree_nodes()
+    return []
+
+
+def _dataset_tree_nodes() -> List[Dict[str, Any]]:
+    nodes: List[Dict[str, Any]] = []
+    dataset_path = st.session_state.get("dataset_path")
+    dataset_kind = st.session_state.get("dataset_kind", "csv")
+    sample_size = st.session_state.get("sample_size")
+    dataset_badge = None
+    if dataset_path:
+        dataset_badge = _format_badge(
+            [
+                dataset_kind.upper() if dataset_kind else None,
+                f"sample {sample_size}" if sample_size else None,
+            ]
+        )
+    if dataset_path:
+        label = Path(dataset_path).name or dataset_path
+        subtitle = "Current dataset"
+        nodes.append(
+            {
+                "id": "current",
+                "label": label,
+                "badge": dataset_badge,
+                "subtitle": subtitle,
+                "payload": {"path": dataset_path},
+            }
+        )
+    if st.session_state.get("use_bundled_images"):
+        bundled_images = _list_bundled_images()
+        image_badge = _format_badge(
+            [
+                "IMAGES",
+                f"{len(bundled_images)} file(s)" if bundled_images else None,
+            ]
+        )
+        nodes.append(
+            {
+                "id": "bundled-images",
+                "label": "Bundled Images",
+                "subtitle": "Sample image dataset",
+                "badge": image_badge,
+                "payload": {"path": str(BUNDLED_IMAGE_DIR)},
+            }
+        )
+    return nodes
+
+
+def _plan_tree_nodes() -> List[Dict[str, Any]]:
+    nodes: List[Dict[str, Any]] = []
+    plan_ops = st.session_state.get("plan_ops") or []
+    if plan_ops:
+        nodes.append(
+            {
+                "id": "active-plan",
+                "label": "Active Plan",
+                "badge": _format_badge([f"{len(plan_ops)} steps"]),
+                "payload": {"ops": plan_ops},
+            }
+        )
+    sample_plan = _load_sample_plan()
+    if sample_plan:
+        nodes.append(
+            {
+                "id": "sample-plan",
+                "label": "Sample Plan",
+                "badge": _format_badge([f"{len(sample_plan.get('ops', []))} steps"]),
+                "payload": {"plan": sample_plan},
+            }
+        )
+    return nodes
+
+
+def _run_tree_nodes() -> List[Dict[str, Any]]:
+    nodes: List[Dict[str, Any]] = []
+    for summary in list_runs():
+        nodes.append(_run_summary_to_node(summary))
+    return nodes
+
+
+def _run_summary_to_node(summary: RunSummary) -> Dict[str, Any]:
+    label = summary.run_id
+    badge = _format_badge(
+        [
+            summary.status,
+            f"{summary.num_artifacts} artifacts" if summary.num_artifacts is not None else None,
+        ]
+    )
+    subtitle = None
+    if summary.started_at:
+        subtitle = summary.started_at.strftime("Started %Y-%m-%d %H:%M")
+    return {
+        "id": summary.run_id,
+        "label": label,
+        "badge": badge,
+        "subtitle": subtitle,
+        "payload": {"run_id": summary.run_id},
+    }
+
+
+def _artifact_tree_nodes() -> List[Dict[str, Any]]:
+    nodes: List[Dict[str, Any]] = []
+    artifact_dir = _REPO_ROOT / "artifacts"
+    if not artifact_dir.exists():
+        return nodes
+    for path in sorted(artifact_dir.iterdir()):
+        if not path.is_dir():
+            continue
+        label = path.name
+        nodes.append(
+            {
+                "id": label,
+                "label": label,
+                "subtitle": "directory",
+                "payload": {"path": str(path)},
+            }
+        )
+    return nodes
+
+
+_render_project_tree_sidebar()
 
 
 def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
@@ -625,21 +940,36 @@ def _extract_artifact_run_identifier(payload: Any) -> Optional[str]:
     return None
 
 
-def render_artifacts_section(resp_json: Any) -> None:
+def render_artifacts_section(resp_json: Any) -> bool:
     arts = resp_json.get("artifacts") if isinstance(resp_json, dict) else None
     if not arts:
-        return
+        return False
+
+    selected_run = st.session_state.get("selected_run_id")
+    run_identifier = _extract_artifact_run_identifier(resp_json)
+    if selected_run and run_identifier and selected_run != run_identifier:
+        st.caption(f"Run filter active: {selected_run}. Artifacts for {run_identifier} hidden.")
+        return False
+    if selected_run and not run_identifier:
+        st.caption(f"Run filter active: {selected_run}. Artifacts with no run metadata hidden.")
+        return False
 
     st.subheader("Artifacts")
-    run_identifier = _extract_artifact_run_identifier(resp_json)
+    if run_identifier:
+        st.caption(f"Run: {run_identifier}")
+
+    rendered_any = False
     for key in ("captions", "metadata", "output_csv", "preview"):
         if key in arts and arts[key]:
             render_artifact(key, arts[key], key_suffix=run_identifier)
+            rendered_any = True
     for key, val in arts.items():
         if key in ("captions", "metadata", "output_csv", "preview"):
             continue
         if isinstance(val, str):
             render_artifact(key, val, key_suffix=run_identifier)
+            rendered_any = True
+    return rendered_any
 
 
 def _prepare_plan_payload(
@@ -978,6 +1308,14 @@ dataset_payload: Optional[Dict[str, Any]] = None
 main_col, provenance_col = st.columns([3, 1.2])
 
 with main_col:
+    active_run_filter = st.session_state.get("selected_run_id")
+    if active_run_filter:
+        info_cols = st.columns([4, 1])
+        info_cols[0].caption(f"Run filter active: {active_run_filter}")
+        if info_cols[1].button("Clear", key="clear_run_filter"):
+            st.session_state.selected_run_id = None
+            st.experimental_rerun()
+
     st.subheader("Plan builder")
 
     if dataset_kind == "csv":
@@ -1315,14 +1653,17 @@ with main_col:
             st.json(schema)
         st.json(preview)
         preview_artifacts = preview.get("artifacts") if isinstance(preview, dict) else None
+        preview_displayed = False
         if dataset_kind == "images":
             captions_path = None
             if isinstance(preview_artifacts, dict):
                 captions_path = preview_artifacts.get("captions")
             if captions_path:
-                render_artifacts_section(preview)
+                preview_displayed = render_artifacts_section(preview)
         else:
-            render_artifacts_section(preview)
+            preview_displayed = render_artifacts_section(preview)
+        if st.session_state.get("selected_run_id") and preview_artifacts and not preview_displayed:
+            st.caption("Preview artifacts hidden by active run filter.")
 
     if st.session_state.execute_result:
         st.markdown("### Execution results")
@@ -1348,7 +1689,9 @@ with main_col:
             st.info(f"Artifacts saved under {run_dir}")
 
         st.json(result)
-        render_artifacts_section(result)
+        artifacts_shown = render_artifacts_section(result)
+        if st.session_state.get("selected_run_id") and artifacts and not artifacts_shown:
+            st.info(f"No execution artifacts matched run {st.session_state.selected_run_id}.")
 
 with provenance_col:
     st.subheader("Provenance")
