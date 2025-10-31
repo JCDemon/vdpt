@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Dict, List, Optional, Set, Union
+from typing import Annotated, Any, Dict, List, Optional, Set, Union
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
@@ -124,6 +124,67 @@ class ImageEmbedOperation(_OperationBase):
         return {"kind": self.kind, "params": params}
 
 
+class SamSegmentOperation(_OperationBase):
+    """Run Segment Anything to generate masks."""
+
+    kind: Literal["sam_segment"] = "sam_segment"
+    checkpoint_path: Optional[str] = None
+    model_type: Optional[str] = None
+    generator: Optional[Dict[str, Any]] = None
+    output_field: Optional[str] = None
+    mock: Optional[bool] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {}
+        if self.checkpoint_path:
+            params["checkpoint_path"] = self.checkpoint_path
+        if self.model_type:
+            params["model_type"] = self.model_type
+        if self.generator:
+            params["generator"] = dict(self.generator)
+        if self.output_field:
+            params["output_field"] = self.output_field
+        if self.mock is not None:
+            params["mock"] = bool(self.mock)
+        return {"kind": self.kind, "params": params}
+
+
+class ClipSegSegmentOperation(_OperationBase):
+    """Run CLIPSeg segmentation using a text prompt."""
+
+    kind: Literal["clipseg_segment"] = "clipseg_segment"
+    prompt: Optional[str] = None
+    model_name: Optional[str] = None
+    threshold: Optional[float] = None
+    output_field: Optional[str] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {}
+        if self.prompt is not None:
+            params["prompt"] = self.prompt
+        if self.model_name:
+            params["model_name"] = self.model_name
+        if self.threshold is not None:
+            params["threshold"] = float(self.threshold)
+        if self.output_field:
+            params["output_field"] = self.output_field
+        return {"kind": self.kind, "params": params}
+
+
+class MaskEmbedOperation(_OperationBase):
+    """Embed segmentation masks for downstream analytics."""
+
+    kind: Literal["embed_masks"] = "embed_masks"
+    source: str = "masks"
+    output_field: Optional[str] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {"source": self.source}
+        if self.output_field:
+            params["output_field"] = self.output_field
+        return {"kind": self.kind, "params": params}
+
+
 class UmapOperation(_OperationBase):
     """Project embeddings into 2D using UMAP."""
 
@@ -178,6 +239,9 @@ Operation = Annotated[
         ImageCaptionOperation,
         ImageResizeOperation,
         ImageEmbedOperation,
+        SamSegmentOperation,
+        ClipSegSegmentOperation,
+        MaskEmbedOperation,
         UmapOperation,
         HdbscanOperation,
     ],
@@ -207,7 +271,16 @@ class Plan(BaseModel):
         runtime: List[Dict[str, object]] = []
         allowed: Dict[str, Set[str]] = {
             "csv": {"field", "summarize", "embed_text", "umap", "hdbscan"},
-            "images": {"img_caption", "img_resize", "embed_image", "umap", "hdbscan"},
+            "images": {
+                "img_caption",
+                "img_resize",
+                "embed_image",
+                "sam_segment",
+                "clipseg_segment",
+                "embed_masks",
+                "umap",
+                "hdbscan",
+            },
         }
         permitted = allowed.get(dataset_kind, set())
         for operation in self.operations:
@@ -223,6 +296,9 @@ __all__ = [
     "ImageCaptionOperation",
     "ImageResizeOperation",
     "ImageEmbedOperation",
+    "SamSegmentOperation",
+    "ClipSegSegmentOperation",
+    "MaskEmbedOperation",
     "Operation",
     "Plan",
     "SummarizeOperation",

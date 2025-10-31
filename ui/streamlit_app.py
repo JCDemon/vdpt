@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
+import io
 import json
+import zipfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +16,7 @@ import math
 import pandas as pd
 import requests
 import streamlit as st
+from PIL import Image
 
 from backend.app.run_index import list_runs
 from backend.app.types import RunSummary
@@ -30,29 +31,35 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 BUNDLED_IMAGE_DIR = _REPO_ROOT / "artifacts" / "bundled_images"
 
 _BUNDLED_IMAGE_PAYLOADS = {
-    "sunrise.png": (
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAABUElEQVR4nO3YsUsCUQDH8ffOgzAJEUKn"
-        "AoeIlqBoCYqShsDIq6GmiHJJmiMyIpyci4Ki4f4AXWwNQRCRhnBpiVaHwAiTEKOU+gt83RG8n8Lvs97y"
-        "+/J4d3Dyp5QS/cxAD/gvBqAxAI0BaAxAYwAaA9AYgMYANAagMQCNAWgMQDMVzyrPL0dX+e92x/QY9rE1E"
-        "vRrm+Wc6gTi6Vs7aRUudhJrMweXd9o2uaI6gVq9+fnVFkLE5saDAZ+uSe6oAtJ7S/P7dnR2bGt5MjId1r"
-        "bJFan+O13/aOWKT2eZ+/WFiVR8UdMoN7regdf3ZvmxGhjy7q5M5c+3r3MPOmc51zVASrl5mq3WGkKIt0Z"
-        "rNNSLryChuAPD/sGbw9WNk6x3wPQYhp20dM5y7o870Pv6/kvMADQGoDEAjQFoDEBjABoD0BiAxgA0BqAx"
-        "AI0BaAxAYwDaL9y0Qb5RRCsoAAAAAElFTkSuQmCC"
+    "sunrise.ppm": (
+        "P3\n"
+        "# simple sunrise palette\n"
+        "4 4\n"
+        "255\n"
+        " 255 69 0    255 99 71   255 140 0   255 215 0\n"
+        " 255 165 0   255 140 0   255 215 0   173 216 230\n"
+        " 238 130 238  216 191 216  173 216 230  135 206 235\n"
+        " 70 130 180   65 105 225   25 25 112   0 0 128\n"
     ),
-    "forest.png": (
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAuElEQVR4nO3TMQqDMABG4bbp7iR0cenq"
-        "0tUb5AxOmXqGHqE36FrwEl4u0MFd0EIekfdNAZf/YXJO33Sq2YUe8C8DaAbQDKAZQDOAZgDNAJoBNANoB"
-        "tAMoBlAu658m55Te2+Xc/fo+tgXmbTNWkAIIb5isSn7VH+Fqg9Yu0I55/k9L+chDc2tKTJpG98A7dAB42"
-        "cstmO3Q/+BKhhAM4BmAM0AmgE0A2gG0AygGUAzgGYAzQCaAbTqA35QXA5MC4MMrAAAAABJRU5ErkJggg=="
+    "forest.ppm": (
+        "P3\n"
+        "# simple forest-like gradient\n"
+        "4 4\n"
+        "255\n"
+        " 34 139 34   34 139 34   60 179 113  85 107 47\n"
+        " 34 139 34   46 139 87   107 142 35  60 179 113\n"
+        " 0 100 0     46 139 87   34 139 34   85 107 47\n"
+        " 139 69 19   160 82 45   34 139 34   34 139 34\n"
     ),
-    "ocean.png": (
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAABR0lEQVR4nO3ZoU8CUQDH8Xd4XrhwQw1O"
-        "CBQJyNk0iZE5qAaMaNH/gOE/IM2KTYsb2oVAwkrjgtsRIKCJqThxOxjYaM89dL7f2H6f9nbl993uXjk"
-        "jf90RiyyEHvBXDEBjABoD0BiAxgA0BqAxAI0BaAxAYwAaA9AYgGb+8Mx/vH+q34TM5cl4lEgfb6YOtc1"
-        "SJw3otRp+o3JQuLVsJxgO6pcn9sp6JJnSOU6F9BXyqle7uXPLdoQQlu3s5IreQ1njMFXSgPfn9mosOTu"
-        "uxdy3nq9l0nyUP+LpVBjGfy75JWlAOBrvd73Zsd/1wtG4lknzkQa4mdNm5SL4+hBCBMNB8660nT3TOEy"
-        "V9BaKuPufry+10tGSaU3Go0Q6v7G1p3OZIoN/aMAYgMYANAagMQCNAWgMQGMAGgPQGIDGADQGoDEAjQFo"
-        "DED7BoxFQgUC1yeEAAAAAElFTkSuQmCC"
+    "ocean.ppm": (
+        "P3\n"
+        "# simple ocean palette\n"
+        "4 4\n"
+        "255\n"
+        " 25 25 112  65 105 225  70 130 180  32 178 170\n"
+        " 0 105 148  30 144 255  70 130 180  0 191 255\n"
+        " 25 25 112  0 0 139      65 105 225  123 104 238\n"
+        " 0 191 255  70 130 180  65 105 225  25 25 112\n"
     ),
 }
 
@@ -84,6 +91,22 @@ IMAGE_SAMPLE_PLAN: Dict[str, Any] = {
         },
     ],
 }
+
+
+_MASK_COLOR_PALETTE: Tuple[Tuple[int, int, int], ...] = (
+    (239, 83, 80),
+    (30, 136, 229),
+    (67, 160, 71),
+    (255, 167, 38),
+    (0, 172, 193),
+    (142, 36, 170),
+    (255, 112, 67),
+    (38, 198, 218),
+    (156, 204, 101),
+    (171, 71, 188),
+)
+_MASK_NOISE_COLOR: Tuple[int, int, int] = (120, 120, 120)
+_MASK_ALPHA: int = 120
 
 
 st.set_page_config(page_title="VDPT Preview & Execute", layout="wide")
@@ -137,8 +160,16 @@ if "provenance_freq_items" not in st.session_state:
     st.session_state.provenance_freq_items = []  # type: ignore[attr-defined]
 if "provenance_recency_items" not in st.session_state:
     st.session_state.provenance_recency_items = []  # type: ignore[attr-defined]
+if "mask_analytics_result" not in st.session_state:
+    st.session_state.mask_analytics_result = None
+if "mask_prompt" not in st.session_state:
+    st.session_state.mask_prompt = ""
+if "mask_segmentation_mode" not in st.session_state:
+    st.session_state.mask_segmentation_mode = "sam"
 if "selected_run_id" not in st.session_state:
     st.session_state.selected_run_id = None
+if "mask_download_counter" not in st.session_state:
+    st.session_state.mask_download_counter = 0
 
 
 def _render_project_tree_sidebar() -> None:
@@ -446,17 +477,15 @@ def _ensure_bundled_images_present() -> None:
         st.warning(f"Unable to create bundled image directory: {exc}")
         return
 
-    for filename, encoded in _BUNDLED_IMAGE_PAYLOADS.items():
+    for filename, payload in _BUNDLED_IMAGE_PAYLOADS.items():
         target = BUNDLED_IMAGE_DIR / filename
         if target.exists():
             continue
         try:
-            binary = base64.b64decode(encoded)
-        except binascii.Error as exc:
-            st.warning(f"Failed to decode bundled image {filename}: {exc}")
-            continue
-        try:
-            target.write_bytes(binary)
+            if isinstance(payload, bytes):
+                target.write_bytes(payload)
+            else:
+                target.write_text(str(payload))
         except OSError as exc:
             st.warning(f"Failed to write bundled image {filename}: {exc}")
 
@@ -510,7 +539,7 @@ def _list_bundled_images() -> List[Path]:
     if not BUNDLED_IMAGE_DIR.exists():
         return []
 
-    supported_suffixes = {".png", ".jpg", ".jpeg"}
+    supported_suffixes = {".png", ".jpg", ".jpeg", ".ppm"}
     candidates = [
         path
         for path in BUNDLED_IMAGE_DIR.iterdir()
@@ -1338,6 +1367,402 @@ def _format_cluster_label(value: Any) -> str:
     return text if text else "Unassigned"
 
 
+def _cluster_color_rgb(value: Any) -> Tuple[int, int, int]:
+    if isinstance(value, (int, float)):
+        cluster_int = int(value)
+        if cluster_int < 0:
+            return _MASK_NOISE_COLOR
+        palette_index = cluster_int % len(_MASK_COLOR_PALETTE)
+        return _MASK_COLOR_PALETTE[palette_index]
+    return _MASK_NOISE_COLOR
+
+
+def _build_mask_dataframe(records: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for record_index, record in enumerate(records):
+        mask_entries = record.get("masks")
+        if not isinstance(mask_entries, list):
+            continue
+        features = record.get("mask_embedding")
+        coords_list = record.get("mask_umap") or record.get("umap")
+        clusters_list = record.get("mask_cluster") or record.get("cluster")
+        for mask_idx, mask_entry in enumerate(mask_entries):
+            if not isinstance(mask_entry, dict):
+                continue
+            feature_entry = None
+            if isinstance(features, list) and mask_idx < len(features):
+                candidate = features[mask_idx]
+                if isinstance(candidate, dict):
+                    feature_entry = candidate
+            coord_values = None
+            if isinstance(coords_list, list) and mask_idx < len(coords_list):
+                coord_candidate = coords_list[mask_idx]
+                if isinstance(coord_candidate, (list, tuple)) and len(coord_candidate) >= 2:
+                    try:
+                        coord_values = (float(coord_candidate[0]), float(coord_candidate[1]))
+                    except (TypeError, ValueError):
+                        coord_values = None
+            cluster_value = None
+            if isinstance(clusters_list, list) and mask_idx < len(clusters_list):
+                cluster_value = clusters_list[mask_idx]
+            mask_id = mask_entry.get("id")
+            if not mask_id and feature_entry and feature_entry.get("mask_id"):
+                mask_id = feature_entry.get("mask_id")
+            if not mask_id:
+                mask_id = f"mask_{mask_idx}"
+            mask_path = mask_entry.get("mask_path")
+            if not mask_path and feature_entry:
+                metadata = feature_entry.get("metadata")
+                if isinstance(metadata, dict):
+                    path_candidate = metadata.get("mask_path")
+                    if path_candidate:
+                        mask_path = str(path_candidate)
+            row: Dict[str, Any] = {
+                "record_index": record_index,
+                "mask_index": mask_idx,
+                "mask_id": str(mask_id),
+                "image_path": str(record.get("image_path") or record.get("path") or ""),
+                "mask_path": str(mask_path) if mask_path else None,
+                "bbox": mask_entry.get("bbox"),
+                "area": mask_entry.get("area"),
+                "score": mask_entry.get("score"),
+                "cluster": cluster_value,
+                "umap": coord_values,
+                "mask_metadata": (
+                    mask_entry.get("metadata")
+                    if isinstance(mask_entry.get("metadata"), dict)
+                    else {}
+                ),
+                "feature": feature_entry or {},
+            }
+            if coord_values is not None:
+                row["umap_x"], row["umap_y"] = coord_values
+            else:
+                row["umap_x"] = None
+                row["umap_y"] = None
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _mask_detail_rows(scatter_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    detail_rows: List[Dict[str, Any]] = []
+    for _, row in scatter_df.iterrows():
+        mask_key = row["mask_key"]
+        label_items = [
+            ("Mask", row.get("mask_id")),
+            ("Image", Path(str(row.get("image_path") or "")).name),
+            ("Cluster", row.get("cluster_label")),
+        ]
+        area_value = row.get("area")
+        if pd.notna(area_value):
+            try:
+                label_items.append(("Area", f"{int(float(area_value))}"))
+            except (TypeError, ValueError):
+                pass
+        score_value = row.get("score")
+        if pd.notna(score_value):
+            try:
+                label_items.append(("Score", f"{float(score_value):.3f}"))
+            except (TypeError, ValueError):
+                pass
+        for order, (label, value) in enumerate(label_items):
+            if value in (None, ""):
+                continue
+            detail_rows.append(
+                {"mask_key": mask_key, "order": order, "display": f"{label}: {value}"}
+            )
+    if not detail_rows:
+        detail_rows.append(
+            {"mask_key": "", "order": 0, "display": "Select a mask to view details."}
+        )
+    return detail_rows
+
+
+def _generate_mask_overlay(image_path: str, mask_rows: pd.DataFrame) -> Optional[Image.Image]:
+    if not image_path:
+        return None
+    image_file = Path(image_path)
+    if not image_file.exists():
+        return None
+    try:
+        base = Image.open(image_file).convert("RGBA")
+    except Exception:
+        return None
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    for _, row in mask_rows.iterrows():
+        mask_path = row.get("mask_path")
+        if not mask_path:
+            continue
+        mask_file = Path(mask_path)
+        if not mask_file.exists():
+            continue
+        try:
+            mask_img = Image.open(mask_file).convert("L")
+        except Exception:
+            continue
+        if mask_img.size != base.size:
+            mask_img = mask_img.resize(base.size, resample=Image.NEAREST)
+        binary_mask = mask_img.point(lambda p: 255 if p > 0 else 0)
+        color_rgb = _cluster_color_rgb(row.get("cluster"))
+        color_image = Image.new("RGBA", base.size, color_rgb + (_MASK_ALPHA,))
+        overlay.paste(color_image, mask=binary_mask)
+    combined = Image.alpha_composite(base, overlay)
+    return combined.convert("RGB")
+
+
+def _render_mask_table(mask_rows: pd.DataFrame) -> None:
+    if mask_rows.empty:
+        st.caption("No masks available.")
+        return
+    table_df = mask_rows.copy()
+    table_df["cluster_label"] = table_df["cluster"].apply(_format_cluster_label)
+    display_columns = ["mask_id", "cluster_label", "area", "score", "mask_path"]
+    for column in ["area", "score"]:
+        if column in table_df.columns:
+            table_df[column] = table_df[column].apply(
+                lambda value: (
+                    ""
+                    if value is None or (isinstance(value, float) and math.isnan(value))
+                    else value
+                )
+            )
+    st.dataframe(table_df[display_columns])
+
+
+def _render_mask_downloads(mask_rows: pd.DataFrame, record_label: str, record_index: int) -> None:
+    mask_paths: List[Path] = []
+    for path_str in mask_rows.get("mask_path", []):
+        if not path_str:
+            continue
+        candidate = Path(str(path_str))
+        if candidate.exists():
+            mask_paths.append(candidate)
+    if not mask_paths:
+        st.caption("Mask files unavailable for download.")
+        return
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for path in mask_paths:
+            archive.write(path, arcname=path.name)
+    buffer.seek(0)
+    # Streamlit deduplicates widgets by key; use a monotonically increasing counter
+    # stored in session_state to avoid DuplicateElementKey issues when rerendering.
+    counter_key = "mask_download_counter"
+    counter_value = int(st.session_state.get(counter_key, 0))
+    unique_key = f"mask-download-{record_index}-{counter_value}"
+    st.session_state[counter_key] = counter_value + 1
+    st.download_button(
+        label=f"Download masks ({record_label})",
+        data=buffer.getvalue(),
+        file_name=f"{record_label}_masks.zip",
+        mime="application/zip",
+        key=unique_key,
+    )
+
+
+def _render_mask_legend(entries: List[Tuple[str, Tuple[int, int, int]]]) -> None:
+    if not entries:
+        return
+    legend_cols = st.columns(len(entries))
+    for (label, color_rgb), col in zip(entries, legend_cols):
+        hex_color = f"#{color_rgb[0]:02x}{color_rgb[1]:02x}{color_rgb[2]:02x}"
+        col.markdown(
+            f"<div style='background-color:{hex_color}; width:100%; height:16px; border-radius:4px'></div>",
+            unsafe_allow_html=True,
+        )
+        col.caption(label)
+
+
+def _format_image_caption(record: Dict[str, Any], default_label: str) -> str:
+    image_path = record.get("image_path") or record.get("path")
+    if not image_path:
+        return default_label
+    return Path(str(image_path)).name or default_label
+
+
+def _render_mask_scatter(mask_df: pd.DataFrame, key_prefix: str) -> None:
+    scatter_df = mask_df.dropna(subset=["umap_x", "umap_y"])
+    if scatter_df.empty:
+        st.caption("Mask embeddings do not include UMAP coordinates.")
+        return
+    scatter_df = scatter_df.copy()
+    scatter_df["cluster_label"] = scatter_df["cluster"].apply(_format_cluster_label)
+    scatter_df["mask_key"] = scatter_df.apply(
+        lambda row: f"{int(row['record_index'])}:{int(row['mask_index'])}", axis=1
+    )
+    selection = alt.selection_point(fields=["mask_key"], name=f"{key_prefix}_mask_select")
+    tooltip_fields = ["mask_key", "mask_id", "cluster_label", "image_path"]
+    chart = (
+        alt.Chart(scatter_df)
+        .mark_circle(size=80)
+        .encode(
+            x=alt.X("umap_x:Q", title="UMAP 1"),
+            y=alt.Y("umap_y:Q", title="UMAP 2"),
+            color=alt.Color("cluster_label:N", title="Cluster"),
+            tooltip=tooltip_fields,
+            opacity=alt.condition(selection, alt.value(0.9), alt.value(0.3)),
+        )
+        .add_params(selection)
+    )
+    detail_rows = _mask_detail_rows(scatter_df)
+    detail_df = pd.DataFrame(detail_rows)
+    detail_chart = (
+        alt.Chart(detail_df)
+        .transform_filter(selection)
+        .mark_text(align="left")
+        .encode(y=alt.Y("order:O", axis=None), text="display:N")
+        .properties(height=max(140, int(detail_df["order"].max() + 1) * 18))
+    )
+    st.altair_chart(
+        (chart & detail_chart).resolve_scale(color="independent"), use_container_width=True
+    )
+    st.caption("Select a mask to view details.")
+
+
+def render_mask_analytics_result(result: Dict[str, Any]) -> None:
+    st.session_state.mask_download_counter = 0
+    records = result.get("records") or []
+    if not records:
+        st.info("No records returned by mask analytics.")
+        return
+    mask_df = _build_mask_dataframe(records)
+    if mask_df.empty:
+        st.info("No masks detected in the current selection.")
+        return
+
+    st.markdown("#### Mask embedding clusters")
+    _render_mask_scatter(mask_df, key_prefix="mask")
+
+    artifacts = result.get("artifacts") or {}
+    mask_artifacts = [
+        f"{key}: {val}" for key, val in artifacts.items() if "mask" in str(key).lower()
+    ]
+    if mask_artifacts:
+        st.caption("Artifacts: " + ", ".join(mask_artifacts))
+
+    for record_index, record in enumerate(records):
+        record_mask_df = mask_df[mask_df["record_index"] == record_index]
+        if record_mask_df.empty:
+            continue
+        image_label = _format_image_caption(record, f"Image {record_index}")
+        st.markdown(f"#### {image_label}")
+        overlay_image = _generate_mask_overlay(
+            record.get("image_path") or record.get("path"), record_mask_df
+        )
+        if overlay_image:
+            st.image(overlay_image, caption="Mask overlay", use_column_width=True)
+        cluster_entries = sorted(
+            {
+                _format_cluster_label(value): _cluster_color_rgb(value)
+                for value in record_mask_df["cluster"].unique()
+            }.items(),
+            key=lambda item: item[0],
+        )
+        _render_mask_legend(cluster_entries)
+        _render_mask_table(record_mask_df)
+        record_stem = Path(record_mask_df["image_path"].iloc[0]).stem or f"image_{record_index}"
+        _render_mask_downloads(record_mask_df, record_stem, record_index)
+        st.markdown("---")
+
+
+def render_mask_analytics_panel(
+    dataset_payload: Optional[Dict[str, Any]], backend_url: str, sample_size: int
+) -> None:
+    st.markdown("### Mask analytics")
+    if not dataset_payload:
+        st.session_state.mask_analytics_result = None
+        st.info("Upload images to enable mask analytics.")
+        return
+
+    segmentation_options = {
+        "Segment Anything (SAM)": "sam",
+        "CLIPSeg (prompt)": "clipseg",
+    }
+    current_mode = st.session_state.get("mask_segmentation_mode", "sam")
+    option_labels = list(segmentation_options.keys())
+    default_index = 0 if current_mode != "clipseg" else 1
+    selected_option = st.radio(
+        "Segmentation method",
+        options=option_labels,
+        index=default_index,
+        key="mask_segmentation_choice",
+    )
+    segmentation_mode = segmentation_options[selected_option]
+    st.session_state.mask_segmentation_mode = segmentation_mode
+
+    prompt_disabled = segmentation_mode != "clipseg"
+    prompt_value = st.text_input(
+        "Text prompt",
+        value=st.session_state.get("mask_prompt", ""),
+        disabled=prompt_disabled,
+        help="Provide a text description for CLIPSeg-guided segmentation.",
+    )
+    if not prompt_disabled:
+        st.session_state.mask_prompt = prompt_value
+
+    control_cols = st.columns([1, 1])
+    run_clicked = control_cols[0].button("Run mask analytics", use_container_width=True)
+    clear_clicked = control_cols[1].button(
+        "Clear results", use_container_width=True, type="secondary"
+    )
+    if clear_clicked:
+        st.session_state.mask_analytics_result = None
+
+    if run_clicked:
+        if segmentation_mode == "clipseg" and not prompt_value.strip():
+            st.warning("Enter a prompt before running CLIPSeg segmentation.")
+        else:
+            operations: List[Dict[str, Any]] = []
+            if segmentation_mode == "clipseg":
+                operations.append(
+                    {
+                        "kind": "clipseg_segment",
+                        "params": {"prompt": prompt_value.strip(), "output_field": "masks"},
+                    }
+                )
+            else:
+                operations.append({"kind": "sam_segment", "params": {"output_field": "masks"}})
+            operations.extend(
+                [
+                    {
+                        "kind": "embed_masks",
+                        "params": {"source": "masks", "output_field": "mask_embedding"},
+                    },
+                    {
+                        "kind": "umap",
+                        "params": {
+                            "source": "mask_embedding",
+                            "output_field": "mask_umap",
+                            "n_neighbors": 15,
+                        },
+                    },
+                    {
+                        "kind": "hdbscan",
+                        "params": {"source": "mask_umap", "output_field": "mask_cluster"},
+                    },
+                ]
+            )
+            request_body = {
+                "dataset": dataset_payload,
+                "operations": operations,
+                "preview_sample_size": sample_size,
+            }
+            with st.spinner("Running mask analytics..."):
+                result = _post_json(f"{backend_url.rstrip('/')}/preview", request_body)
+            if result is not None:
+                st.session_state.mask_analytics_result = {
+                    "result": result,
+                    "params": {
+                        "segmentation": segmentation_mode,
+                        "prompt": prompt_value.strip() if segmentation_mode == "clipseg" else "",
+                    },
+                }
+
+    stored_result = st.session_state.get("mask_analytics_result")
+    if stored_result and stored_result.get("result"):
+        render_mask_analytics_result(stored_result["result"])
+
+
 def _extract_artifact_run_identifier(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -1588,6 +2013,7 @@ if selected_kind != st.session_state.dataset_kind:
     st.session_state.plan_ops = []  # type: ignore[assignment]
     st.session_state.preview_result = None
     st.session_state.execute_result = None
+    st.session_state.mask_analytics_result = None
 
 dataset_kind = st.session_state.dataset_kind
 
@@ -1720,7 +2146,7 @@ else:
                 ]
                 st.rerun()  # refresh UI with stable API
     else:
-        st.sidebar.info("Upload PNG or JPG files to begin.")
+        st.sidebar.info("Upload PNG, JPG, or PPM files to begin.")
 
 dataset_payload: Optional[Dict[str, Any]] = None
 
@@ -1794,6 +2220,9 @@ with main_col:
         dataset_payload = build_dataset_payload_images(
             images_dir_path.resolve(), list(st.session_state.selected_images)
         )
+
+    if dataset_kind == "images":
+        render_mask_analytics_panel(dataset_payload, backend_url, st.session_state.sample_size)
 
     st.markdown("### Operations")
     available_kinds = (

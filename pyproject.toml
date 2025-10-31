@@ -22,4 +22,7 @@ dependencies = [
     "open-clip-torch",
     "umap-learn",
     "hdbscan",
+    "segment-anything",
+    "transformers",
+    "torch",
 ]

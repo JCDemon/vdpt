@@ -54,6 +54,7 @@ htmlcov/
 artifacts/*
 !artifacts/bundled_images/
 !artifacts/bundled_images/**
+!artifacts/preview_mask_analytics.json
 
 
 # Test assets

@@ -44,10 +44,11 @@ def tmp_artifacts_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     images_dir = Path("artifacts") / "bundled_images"
     images_dir.mkdir(parents=True, exist_ok=True)
     created_images: list[Path] = []
-    for name in ("forest.png", "ocean.png", "sunrise.png"):
+    ppm_placeholder = ("P3\n# placeholder\n1 1\n255\n 255 0 0\n").encode("utf-8")
+    for name in ("forest.ppm", "ocean.ppm", "sunrise.ppm"):
         image_path = images_dir / name
         if not image_path.exists():
-            image_path.write_bytes(b"placeholder image")
+            image_path.write_bytes(ppm_placeholder)
             created_images.append(image_path)
 
     created_dirs: list[Path] = []
@@ -129,7 +130,7 @@ def test_preview_images_captions_non_empty(api_client: TestClient) -> None:
         "dataset": {
             "type": "images",
             "path": "artifacts/bundled_images",
-            "paths": ["forest.png", "ocean.png", "sunrise.png"],
+            "paths": ["forest.ppm", "ocean.ppm", "sunrise.ppm"],
         },
         "preview_sample_size": 3,
         "operations": [

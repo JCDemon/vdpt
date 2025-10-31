@@ -21,6 +21,7 @@ from ..types import LogEntry, ProvenanceEdge, ProvenanceNode
 # Ensure operation handlers register themselves on import.
 from ..ops import embed as _embed_ops  # noqa: F401
 from ..ops import image_ops as _image_ops  # noqa: F401
+from ..ops import segment as _segment_ops  # noqa: F401
 from ..ops.cluster import hdbscan_cluster, umap_reduce
 from ..ops.text import summarize as _text_summarize  # noqa: F401
 
@@ -239,6 +240,10 @@ def preview_dataset(
 
     embedding_store: dict[str, List[np.ndarray | None]] = {}
     umap_results: dict[str, List[Optional[np.ndarray]]] = {}
+    mask_embedding_store: dict[str, List[List[Optional[np.ndarray]]]] = {}
+    mask_embedding_meta: dict[str, List[List[Dict[str, Any]]]] = {}
+    mask_umap_results: dict[str, List[List[Optional[np.ndarray]]]] = {}
+    mask_umap_metadata: dict[str, List[Dict[str, Any]]] = {}
     record_entries: List[dict[str, Any]] = []
     artifacts: Dict[str, str] = {}
 
@@ -410,6 +415,88 @@ def preview_dataset(
                 if output_field not in base_columns and output_field not in new_columns_seen:
                     schema_new_columns.append(output_field)
                     new_columns_seen.add(output_field)
+            elif dataset_kind == "images" and kind in {"sam_segment", "clipseg_segment"}:
+                output_field = str(params.get("output_field") or "masks")
+                try:
+                    op_result = run_operation(record, kind, params, out_dir=run_dir)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("%s failed for path '%s'", kind, record.get("image_path"))
+                    message = f"{kind} failed: {exc}"
+                    record_errors.append(message)
+                    provenance.log(
+                        "ERROR",
+                        f"{kind} failed",
+                        record_entry=record_entry,
+                        context={"error": str(exc)},
+                    )
+                    record[output_field] = []
+                else:
+                    masks_value = op_result.get(output_field)
+                    if isinstance(masks_value, list):
+                        record[output_field] = masks_value
+                    elif masks_value is None:
+                        record[output_field] = []
+                    else:
+                        record[output_field] = [masks_value]
+                    mask_dir_value = op_result.get("mask_artifact_dir")
+                    if mask_dir_value:
+                        record[f"{output_field}_dir"] = str(mask_dir_value)
+                    if op_result:
+                        provenance.record_operation(record_entry, kind, params, op_result)
+                if output_field not in base_columns and output_field not in new_columns_seen:
+                    schema_new_columns.append(output_field)
+                    new_columns_seen.add(output_field)
+            elif dataset_kind == "images" and kind == "embed_masks":
+                source_field = str(params.get("source") or params.get("field") or "masks")
+                output_field = str(params.get("output_field") or "mask_embedding")
+                mask_vectors = mask_embedding_store.setdefault(output_field, [])
+                mask_meta = mask_embedding_meta.setdefault(output_field, [])
+                while len(mask_vectors) <= index:
+                    mask_vectors.append([])
+                while len(mask_meta) <= index:
+                    mask_meta.append([])
+                mask_vectors[index] = []
+                mask_meta[index] = []
+                try:
+                    op_result = run_operation(record, kind, params, out_dir=run_dir)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("embed_masks failed for path '%s'", record.get("image_path"))
+                    message = f"embed_masks failed: {exc}"
+                    record_errors.append(message)
+                    provenance.log(
+                        "ERROR",
+                        "embed_masks failed",
+                        record_entry=record_entry,
+                        context={"error": str(exc), "source": source_field},
+                    )
+                    record[output_field] = []
+                else:
+                    features_value = op_result.get(output_field)
+                    if isinstance(features_value, list):
+                        record[output_field] = features_value
+                    elif features_value is None:
+                        record[output_field] = []
+                    else:
+                        record[output_field] = [features_value]
+                    vectors_for_record: List[Optional[np.ndarray]] = []
+                    meta_for_record: List[Dict[str, Any]] = []
+                    for feature in record[output_field]:
+                        if not isinstance(feature, dict):
+                            continue
+                        vector_array = _vector_from_output(feature.get("vector"))
+                        vectors_for_record.append(vector_array)
+                        meta = {key: value for key, value in feature.items() if key != "vector"}
+                        meta_for_record.append(meta)
+                    mask_vectors[index] = vectors_for_record
+                    mask_meta[index] = meta_for_record
+                    embedding_dir_value = op_result.get("mask_embedding_dir")
+                    if embedding_dir_value:
+                        record[f"{output_field}_dir"] = str(embedding_dir_value)
+                    if op_result:
+                        provenance.record_operation(record_entry, kind, params, op_result)
+                if output_field not in base_columns and output_field not in new_columns_seen:
+                    schema_new_columns.append(output_field)
+                    new_columns_seen.add(output_field)
 
         if record_errors:
             for err in record_errors:
@@ -424,13 +511,26 @@ def preview_dataset(
         if kind == "umap":
             source_field = str(params.get("source") or params.get("field") or "embedding")
             output_field = str(params.get("output_field") or "umap")
-            embeddings_list = embedding_store.get(source_field)
-            coords_by_record: List[Optional[np.ndarray]] = [None] * len(processed_records)
-
-            if embeddings_list:
-                valid = [(idx, vec) for idx, vec in enumerate(embeddings_list) if vec is not None]
-                if len(valid) >= 2:
-                    matrix = np.vstack([vec for _, vec in valid])
+            if source_field in mask_embedding_store:
+                mask_vectors_nested = mask_embedding_store.get(source_field, [])
+                metadata_nested = mask_embedding_meta.get(source_field, [])
+                coords_nested: List[List[Optional[np.ndarray]]] = [
+                    [None] * len(vectors) for vectors in mask_vectors_nested
+                ]
+                valid_vectors: List[np.ndarray] = []
+                valid_metadata: List[Dict[str, Any]] = []
+                for record_idx, vectors in enumerate(mask_vectors_nested):
+                    metas = metadata_nested[record_idx] if record_idx < len(metadata_nested) else []
+                    for mask_idx, vector in enumerate(vectors):
+                        if vector is None:
+                            continue
+                        valid_vectors.append(vector.astype(np.float32))
+                        meta = {"record_index": record_idx, "mask_index": mask_idx}
+                        if mask_idx < len(metas):
+                            meta.update({k: v for k, v in metas[mask_idx].items() if k != "vector"})
+                        valid_metadata.append(meta)
+                if len(valid_vectors) >= 2:
+                    matrix = np.vstack(valid_vectors)
                     coords_valid = umap_reduce(
                         matrix,
                         n_neighbors=_coerce_positive_int(
@@ -440,11 +540,53 @@ def preview_dataset(
                         metric=str(params.get("metric") or "cosine"),
                     )
                     coords_valid = np.asarray(coords_valid, dtype=np.float32)
-                    for (idx, _), coord in zip(valid, coords_valid):
-                        coords_by_record[idx] = coord.astype(np.float32)
-                elif len(valid) == 1:
-                    coords_by_record[valid[0][0]] = np.array([0.0, 0.0], dtype=np.float32)
-            else:
+                    for meta, coord in zip(valid_metadata, coords_valid):
+                        coords_nested[meta["record_index"]][meta["mask_index"]] = coord.astype(
+                            np.float32
+                        )
+                elif len(valid_vectors) == 1:
+                    meta = valid_metadata[0]
+                    coords_nested[meta["record_index"]][meta["mask_index"]] = np.array(
+                        [0.0, 0.0], dtype=np.float32
+                    )
+                mask_umap_results[output_field] = coords_nested
+                mask_umap_metadata[output_field] = valid_metadata
+                for idx, coord_list in enumerate(coords_nested):
+                    serialized = []
+                    for coord in coord_list:
+                        if coord is None:
+                            serialized.append(None)
+                        else:
+                            serialized.append([float(coord[0]), float(coord[1])])
+                    processed_records[idx][output_field] = serialized
+                    provenance.record_operation(
+                        record_entries[idx], kind, params, {output_field: serialized}
+                    )
+                if output_field not in base_columns and output_field not in new_columns_seen:
+                    schema_new_columns.append(output_field)
+                    new_columns_seen.add(output_field)
+                coords_flat = [
+                    coords_nested[meta["record_index"]][meta["mask_index"]]
+                    for meta in valid_metadata
+                    if coords_nested[meta["record_index"]][meta["mask_index"]] is not None
+                ]
+                coords_array = (
+                    np.vstack([coord.astype(np.float32) for coord in coords_flat])
+                    if coords_flat
+                    else np.zeros((0, 2), dtype=np.float32)
+                )
+                filename = run_dir / f"{_sanitize_name(output_field)}_mask_umap.npy"
+                np.save(filename, coords_array)
+                artifacts[_artifact_key("umap", output_field)] = str(filename)
+                if valid_metadata:
+                    meta_filename = run_dir / f"{_sanitize_name(output_field)}_mask_umap_meta.json"
+                    meta_payload = [_safe_json_value(meta) for meta in valid_metadata]
+                    meta_filename.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2))
+                    artifacts[_artifact_key("umap_meta", output_field)] = str(meta_filename)
+                continue
+
+            embeddings_list = embedding_store.get(source_field)
+            if embeddings_list is None:
                 message = f"umap requires embeddings for '{source_field}'"
                 for record, record_entry in zip(processed_records, record_entries):
                     _append_error(record, message)
@@ -456,6 +598,24 @@ def preview_dataset(
                     )
                     provenance.log("WARNING", message, record_entry=record_entry)
                 continue
+
+            coords_by_record: List[Optional[np.ndarray]] = [None] * len(processed_records)
+            valid = [(idx, vec) for idx, vec in enumerate(embeddings_list) if vec is not None]
+            if len(valid) >= 2:
+                matrix = np.vstack([vec for _, vec in valid])
+                coords_valid = umap_reduce(
+                    matrix,
+                    n_neighbors=_coerce_positive_int(
+                        params.get("n_neighbors"), default=15, minimum=2
+                    ),
+                    min_dist=_coerce_float(params.get("min_dist"), default=0.1, minimum=0.0),
+                    metric=str(params.get("metric") or "cosine"),
+                )
+                coords_valid = np.asarray(coords_valid, dtype=np.float32)
+                for (idx, _), coord in zip(valid, coords_valid):
+                    coords_by_record[idx] = coord.astype(np.float32)
+            elif len(valid) == 1:
+                coords_by_record[valid[0][0]] = np.array([0.0, 0.0], dtype=np.float32)
 
             umap_results[output_field] = coords_by_record
             for idx, coord in enumerate(coords_by_record):
@@ -482,27 +642,58 @@ def preview_dataset(
         elif kind == "hdbscan":
             source_field = str(params.get("source") or "umap")
             output_field = str(params.get("output_field") or "cluster")
-            coords_by_record = umap_results.get(source_field)
-            labels_by_record: List[int] = [-1] * len(processed_records)
-
-            if coords_by_record:
-                valid = [
-                    (idx, coord) for idx, coord in enumerate(coords_by_record) if coord is not None
+            if source_field in mask_umap_results:
+                coords_nested = mask_umap_results.get(source_field, [])
+                metadata_flat = mask_umap_metadata.get(source_field, [])
+                labels_nested: List[List[int]] = [
+                    [-1] * len(coords_row) for coords_row in coords_nested
                 ]
-                if valid:
-                    matrix = np.vstack([coord for _, coord in valid])
-                    labels_valid = hdbscan_cluster(
-                        matrix,
-                        min_cluster_size=_coerce_positive_int(
-                            params.get("min_cluster_size"), default=10, minimum=2
-                        ),
-                        min_samples=_coerce_optional_int(params.get("min_samples")),
-                        metric=str(params.get("metric") or "euclidean"),
+                if metadata_flat:
+                    matrix_inputs = [
+                        coords_nested[meta["record_index"]][meta["mask_index"]]
+                        for meta in metadata_flat
+                        if coords_nested[meta["record_index"]][meta["mask_index"]] is not None
+                    ]
+                    if matrix_inputs:
+                        matrix = np.vstack(matrix_inputs)
+                        labels_valid = hdbscan_cluster(
+                            matrix,
+                            min_cluster_size=_coerce_positive_int(
+                                params.get("min_cluster_size"), default=10, minimum=2
+                            ),
+                            min_samples=_coerce_optional_int(params.get("min_samples")),
+                            metric=str(params.get("metric") or "euclidean"),
+                        )
+                        labels_valid = np.asarray(labels_valid, dtype=np.int32)
+                        for meta, label in zip(metadata_flat, labels_valid):
+                            labels_nested[meta["record_index"]][meta["mask_index"]] = int(label)
+                for idx, label_list in enumerate(labels_nested):
+                    processed_records[idx][output_field] = [int(label) for label in label_list]
+                    provenance.record_operation(
+                        record_entries[idx],
+                        kind,
+                        params,
+                        {output_field: processed_records[idx][output_field]},
                     )
-                    labels_valid = np.asarray(labels_valid, dtype=np.int32)
-                    for (idx, _), label in zip(valid, labels_valid):
-                        labels_by_record[idx] = int(label)
-            else:
+                if output_field not in base_columns and output_field not in new_columns_seen:
+                    schema_new_columns.append(output_field)
+                    new_columns_seen.add(output_field)
+                labels_flat = [
+                    labels_nested[meta["record_index"]][meta["mask_index"]]
+                    for meta in metadata_flat
+                ]
+                labels_array = (
+                    np.asarray(labels_flat, dtype=np.int32)
+                    if labels_flat
+                    else np.zeros((0,), dtype=np.int32)
+                )
+                filename = run_dir / f"{_sanitize_name(output_field)}_mask_hdbscan.npy"
+                np.save(filename, labels_array)
+                artifacts[_artifact_key("hdbscan", output_field)] = str(filename)
+                continue
+
+            coords_by_record = umap_results.get(source_field)
+            if coords_by_record is None:
                 message = f"hdbscan requires UMAP coordinates from '{source_field}'"
                 for record, record_entry in zip(processed_records, record_entries):
                     _append_error(record, message)
@@ -514,6 +705,24 @@ def preview_dataset(
                     )
                     provenance.log("WARNING", message, record_entry=record_entry)
                 continue
+
+            labels_by_record: List[int] = [-1] * len(processed_records)
+            valid = [
+                (idx, coord) for idx, coord in enumerate(coords_by_record) if coord is not None
+            ]
+            if valid:
+                matrix = np.vstack([coord for _, coord in valid])
+                labels_valid = hdbscan_cluster(
+                    matrix,
+                    min_cluster_size=_coerce_positive_int(
+                        params.get("min_cluster_size"), default=10, minimum=2
+                    ),
+                    min_samples=_coerce_optional_int(params.get("min_samples")),
+                    metric=str(params.get("metric") or "euclidean"),
+                )
+                labels_valid = np.asarray(labels_valid, dtype=np.int32)
+                for (idx, _), label in zip(valid, labels_valid):
+                    labels_by_record[idx] = int(label)
 
             for idx, label in enumerate(labels_by_record):
                 processed_records[idx][output_field] = int(label)
