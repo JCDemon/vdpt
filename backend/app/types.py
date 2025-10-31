@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional
+from pathlib import Path
+from typing import Any, Dict, Literal, Optional, Tuple, List
 
 from pydantic import BaseModel, Field
 
@@ -74,3 +75,98 @@ class LogEntry(BaseModel):
     level: str
     message: str
     context: Dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass
+class Mask:
+    """Segmentation mask persisted as an artifact on disk."""
+
+    id: str
+    image_path: str
+    mask_path: str
+    bbox: Tuple[int, int, int, int]
+    area: int
+    score: Optional[float] = None
+    prompt: Optional[str] = None
+    model: Optional[str] = None
+    rle_path: Optional[str] = None
+    polygon_path: Optional[str] = None
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        payload["bbox"] = list(self.bbox)
+        return payload
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Dict[str, Any],
+        *,
+        fallback_image_path: Optional[str] = None,
+    ) -> "Mask":
+        bbox = _coerce_bbox(payload.get("bbox"))
+        area = _coerce_int(payload.get("area"))
+        score = _coerce_float(payload.get("score"))
+        mask_path = str(payload.get("mask_path") or payload.get("path") or "")
+        image_path = str(payload.get("image_path") or fallback_image_path or "")
+        return cls(
+            id=str(payload.get("id") or payload.get("mask_id") or Path(mask_path).stem or "mask"),
+            image_path=image_path,
+            mask_path=mask_path,
+            bbox=bbox,
+            area=area,
+            score=score,
+            prompt=payload.get("prompt"),
+            model=payload.get("model"),
+            rle_path=payload.get("rle_path"),
+            polygon_path=payload.get("polygon_path"),
+            extra=dict(payload.get("extra") or {}),
+        )
+
+
+@dataclass
+class MaskFeature(Mask):
+    """Mask enriched with embedding, projection, and clustering metadata."""
+
+    embedding: List[float] = field(default_factory=list)
+    umap: Optional[Tuple[float, float]] = None
+    cluster: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = super().to_dict()
+        payload["embedding"] = list(self.embedding)
+        if self.umap is not None:
+            payload["umap"] = [float(val) for val in self.umap]
+        if self.cluster is not None:
+            payload["cluster"] = int(self.cluster)
+        return payload
+
+
+def _coerce_bbox(value: Any) -> Tuple[int, int, int, int]:
+    if isinstance(value, (list, tuple)) and len(value) >= 4:
+        coords: List[int] = []
+        for i in range(4):
+            try:
+                coords.append(int(float(value[i])))
+            except (TypeError, ValueError):
+                coords.append(0)
+        x0, y0, x1, y1 = coords[:4]
+        return (x0, y0, x1, y1)
+    return (0, 0, 0, 0)
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

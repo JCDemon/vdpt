@@ -63,6 +63,20 @@ class SummarizeOperation(_OperationBase):
         return {"kind": self.kind, "params": params}
 
 
+class TextEmbedOperation(_OperationBase):
+    """Generate embeddings for a text field."""
+
+    kind: Literal["embed_text"] = "embed_text"
+    field: str = "text"
+    output_field: Optional[str] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {"field": self.field}
+        if self.output_field:
+            params["output_field"] = self.output_field
+        return {"kind": self.kind, "params": params}
+
+
 class ImageCaptionOperation(_OperationBase):
     """Generate captions for image previews."""
 
@@ -96,12 +110,121 @@ class ImageResizeOperation(_OperationBase):
         return {"kind": self.kind, "params": params}
 
 
+class ImageEmbedOperation(_OperationBase):
+    """Generate embeddings for an image field."""
+
+    kind: Literal["embed_image"] = "embed_image"
+    field: str = "image_path"
+    output_field: Optional[str] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {"field": self.field}
+        if self.output_field:
+            params["output_field"] = self.output_field
+        return {"kind": self.kind, "params": params}
+
+
+class MaskEmbedOperation(_OperationBase):
+    """Generate embeddings for segmentation masks."""
+
+    kind: Literal["embed_masks"] = "embed_masks"
+    output_field: Optional[str] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {}
+        if self.output_field:
+            params["output_field"] = self.output_field
+        return {"kind": self.kind, "params": params}
+
+
+class SamSegmentOperation(_OperationBase):
+    """Run SAM automatic segmentation for an image."""
+
+    kind: Literal["sam_segment"] = "sam_segment"
+    max_masks: Optional[PositiveInt] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {}
+        if self.max_masks is not None:
+            params["max_masks"] = int(self.max_masks)
+        return {"kind": self.kind, "params": params}
+
+
+class ClipSegOperation(_OperationBase):
+    """Run CLIPSeg text-prompted segmentation for an image."""
+
+    kind: Literal["clipseg_segment"] = "clipseg_segment"
+    prompt: Optional[str] = None
+    threshold: Optional[float] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {}
+        if self.prompt is not None:
+            params["prompt"] = self.prompt
+        if self.threshold is not None:
+            params["threshold"] = float(self.threshold)
+        return {"kind": self.kind, "params": params}
+
+
+class UmapOperation(_OperationBase):
+    """Project embeddings into 2D using UMAP."""
+
+    kind: Literal["umap"] = "umap"
+    source: str = "embedding"
+    output_field: Optional[str] = None
+    n_neighbors: Optional[int] = None
+    min_dist: Optional[float] = None
+    metric: Optional[str] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {"source": self.source}
+        if self.output_field:
+            params["output_field"] = self.output_field
+        if self.n_neighbors is not None:
+            params["n_neighbors"] = int(self.n_neighbors)
+        if self.min_dist is not None:
+            params["min_dist"] = float(self.min_dist)
+        if self.metric:
+            params["metric"] = self.metric
+        return {"kind": self.kind, "params": params}
+
+
+class HdbscanOperation(_OperationBase):
+    """Cluster reduced coordinates using HDBSCAN."""
+
+    kind: Literal["hdbscan"] = "hdbscan"
+    source: str = "umap"
+    output_field: Optional[str] = None
+    min_cluster_size: Optional[int] = None
+    min_samples: Optional[int] = None
+    metric: Optional[str] = None
+
+    def runtime_payload(self) -> Dict[str, object]:
+        params: Dict[str, object] = {"source": self.source}
+        if self.output_field:
+            params["output_field"] = self.output_field
+        if self.min_cluster_size is not None:
+            params["min_cluster_size"] = int(self.min_cluster_size)
+        if self.min_samples is not None:
+            params["min_samples"] = int(self.min_samples)
+        if self.metric:
+            params["metric"] = self.metric
+        return {"kind": self.kind, "params": params}
+
+
 Operation = Annotated[
     Union[
         FieldOperation,
         SummarizeOperation,
+        TextEmbedOperation,
         ImageCaptionOperation,
         ImageResizeOperation,
+        ImageEmbedOperation,
+        MaskEmbedOperation,
+        SamSegmentOperation,
+        ClipSegOperation,
+        UmapOperation,
+        HdbscanOperation,
     ],
     Field(discriminator="kind"),
 ]
@@ -128,8 +251,17 @@ class Plan(BaseModel):
     def runtime_operations_for(self, dataset_kind: str) -> List[Dict[str, object]]:
         runtime: List[Dict[str, object]] = []
         allowed: Dict[str, Set[str]] = {
-            "csv": {"field", "summarize"},
-            "images": {"img_caption", "img_resize"},
+            "csv": {"field", "summarize", "embed_text", "umap", "hdbscan"},
+            "images": {
+                "img_caption",
+                "img_resize",
+                "embed_image",
+                "embed_masks",
+                "sam_segment",
+                "clipseg_segment",
+                "umap",
+                "hdbscan",
+            },
         }
         permitted = allowed.get(dataset_kind, set())
         for operation in self.operations:
@@ -144,7 +276,14 @@ __all__ = [
     "FieldOperation",
     "ImageCaptionOperation",
     "ImageResizeOperation",
+    "ImageEmbedOperation",
+    "MaskEmbedOperation",
+    "SamSegmentOperation",
+    "ClipSegOperation",
     "Operation",
     "Plan",
     "SummarizeOperation",
+    "TextEmbedOperation",
+    "UmapOperation",
+    "HdbscanOperation",
 ]

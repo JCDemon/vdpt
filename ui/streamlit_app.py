@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
+import altair as alt
+import math
 import pandas as pd
 import requests
 import streamlit as st
+from PIL import Image, ImageColor
 
 from backend.app.run_index import list_runs
 from backend.app.types import RunSummary
@@ -1112,6 +1115,492 @@ def render_operation_detail_drawers(section_label: str, payload: Dict[str, Any])
                 st.caption("No logs for this record.")
 
 
+def render_cluster_view(
+    records: List[Dict[str, Any]],
+    *,
+    key_prefix: str,
+    dataset_kind: str,
+    artifacts: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if not records:
+        return False
+
+    umap_field = _detect_umap_field(records)
+    cluster_field = _detect_cluster_field(records)
+    if not umap_field or not cluster_field:
+        return False
+
+    label_field = _guess_label_field(records, dataset_kind)
+    scatter_rows: List[Dict[str, Any]] = []
+    detail_rows: List[Dict[str, Any]] = []
+
+    for idx, record in enumerate(records):
+        coords = record.get(umap_field)
+        if not _valid_umap_point(coords):
+            continue
+        x_val = float(coords[0])
+        y_val = float(coords[1])
+        cluster_value = record.get(cluster_field)
+        scatter_rows.append(
+            {
+                "row_index": idx,
+                "umap_x": x_val,
+                "umap_y": y_val,
+                "cluster_label": _format_cluster_label(cluster_value),
+                "label": _extract_label(record, label_field),
+            }
+        )
+        detail_rows.extend(
+            _detail_rows_for_record(
+                idx,
+                record,
+                skip_keys={umap_field, cluster_field, "embedding"},
+            )
+        )
+
+    if not scatter_rows:
+        return False
+
+    scatter_df = pd.DataFrame(scatter_rows)
+    scatter_df["cluster_label"] = scatter_df["cluster_label"].astype(str)
+
+    selection = alt.selection_point(
+        fields=["row_index"],
+        name=f"{key_prefix}_cluster_select",
+    )
+    tooltip_fields = ["row_index", "cluster_label"]
+    if "label" in scatter_df.columns:
+        tooltip_fields.append("label")
+
+    points = (
+        alt.Chart(scatter_df)
+        .mark_circle(size=80)
+        .encode(
+            x=alt.X("umap_x:Q", title="UMAP 1"),
+            y=alt.Y("umap_y:Q", title="UMAP 2"),
+            color=alt.Color("cluster_label:N", title="Cluster"),
+            tooltip=tooltip_fields,
+            opacity=alt.condition(selection, alt.value(0.9), alt.value(0.3)),
+        )
+        .add_params(selection)
+    )
+
+    if detail_rows:
+        detail_df = pd.DataFrame(detail_rows)
+        detail_chart = (
+            alt.Chart(detail_df)
+            .transform_filter(selection)
+            .mark_text(align="left")
+            .encode(
+                y=alt.Y("order:O", axis=None),
+                text="display:N",
+            )
+            .properties(height=max(140, int(detail_df["order"].max() + 1) * 18))
+        )
+    else:
+        detail_chart = (
+            alt.Chart(pd.DataFrame({"display": ["Select a point to view details."]}))
+            .mark_text(align="left")
+            .encode(text="display:N")
+        )
+
+    st.markdown("#### Cluster view")
+    st.altair_chart(
+        (points & detail_chart).resolve_scale(color="independent"), use_container_width=True
+    )
+    st.caption("Click a point to view the corresponding record.")
+
+    if artifacts:
+        cluster_artifacts = [
+            f"{key}: {val}"
+            for key, val in artifacts.items()
+            if str(key).startswith(("umap", "hdbscan"))
+        ]
+        if cluster_artifacts:
+            st.caption("Artifacts: " + ", ".join(cluster_artifacts))
+    return True
+
+
+def _detect_umap_field(records: List[Dict[str, Any]]) -> Optional[str]:
+    if not records:
+        return None
+    preferred = ("umap", "umap_coords", "coords")
+    for field in preferred:
+        if any(_valid_umap_point(record.get(field)) for record in records):
+            return field
+    for key in records[0].keys():
+        if _valid_umap_point(records[0].get(key)):
+            return key
+    return None
+
+
+def _detect_cluster_field(records: List[Dict[str, Any]]) -> Optional[str]:
+    if not records:
+        return None
+    preferred = ("cluster", "cluster_id", "cluster_label")
+    for field in preferred:
+        if any(field in record for record in records):
+            if any(record.get(field) is not None for record in records):
+                return field
+    for key in records[0].keys():
+        if "cluster" in key.lower():
+            return key
+    return None
+
+
+def _valid_umap_point(value: Any) -> bool:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return False
+    try:
+        x_val = float(value[0])
+        y_val = float(value[1])
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(x_val) and math.isfinite(y_val)
+
+
+def _guess_label_field(records: List[Dict[str, Any]], dataset_kind: str) -> Optional[str]:
+    if not records:
+        return None
+    priority = ["text", "caption", "title", "headline"]
+    if dataset_kind == "images":
+        priority.insert(0, "image_path")
+    for field in priority:
+        if any(field in record and record[field] for record in records):
+            return field
+    for key, value in records[0].items():
+        if isinstance(value, str) and value:
+            return key
+    return None
+
+
+def _extract_label(record: Dict[str, Any], field: Optional[str]) -> str:
+    if not field:
+        return ""
+    value = record.get(field)
+    if value is None:
+        return ""
+    text = str(value)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _detail_rows_for_record(
+    row_index: int,
+    record: Dict[str, Any],
+    *,
+    skip_keys: Optional[set[str]] = None,
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    skip = set(skip_keys or set())
+    skip.update({"error", "logs"})
+    order = 0
+    for key, value in record.items():
+        if key in skip:
+            continue
+        display_value = _format_detail_value(value)
+        rows.append({"row_index": row_index, "order": order, "display": f"{key}: {display_value}"})
+        order += 1
+        if order >= limit:
+            break
+    return rows
+
+
+def _format_detail_value(value: Any) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    if isinstance(value, (int, str)):
+        text = str(value)
+        return text if len(text) <= 120 else text[:117] + "..."
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        if len(value) > 12:
+            return f"[{len(value)} items]"
+        return "[" + ", ".join(_format_detail_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        try:
+            serialized = json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            serialized = str(value)
+        return serialized if len(serialized) <= 120 else serialized[:117] + "..."
+    return str(value)
+
+
+def _format_cluster_label(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        cluster_int = int(value)
+        return "Noise (-1)" if cluster_int == -1 else f"Cluster {cluster_int}"
+    if value is None:
+        return "Unassigned"
+    text = str(value)
+    return text if text else "Unassigned"
+
+
+_MASK_CLUSTER_COLORS = [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+]
+
+
+def render_mask_analytics(
+    records: List[Dict[str, Any]],
+    artifacts: Optional[Dict[str, Any]],
+    *,
+    key_prefix: str,
+) -> bool:
+    """Render mask overlays and per-mask analytics for image datasets."""
+
+    mask_records: List[Tuple[int, Dict[str, Any]]] = []
+    for idx, record in enumerate(records):
+        masks = record.get("mask_features") or record.get("masks")
+        if isinstance(masks, list) and masks:
+            mask_records.append((idx, record))
+
+    if not mask_records:
+        return False
+
+    st.markdown("#### Mask analytics")
+    run_identifier = None
+    if isinstance(artifacts, dict):
+        run_identifier = _extract_artifact_run_identifier({"artifacts": artifacts})
+    widget_suffix = run_identifier or key_prefix
+
+    options: List[str] = []
+    option_lookup: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+    for idx, record in mask_records:
+        image_path = record.get("image_path")
+        label = f"Image {idx}"
+        if image_path:
+            label = f"{label} · {Path(image_path).name}"
+        options.append(label)
+        option_lookup[label] = (idx, record)
+
+    selected_label = st.selectbox(
+        "Select an image", options, key=f"{key_prefix}-mask-select-{widget_suffix}"
+    )
+    selected_idx, selected_record = option_lookup[selected_label]
+    features: List[Dict[str, Any]] = (
+        selected_record.get("mask_features") or selected_record.get("masks") or []
+    )
+
+    opacity = st.slider(
+        "Mask overlay opacity",
+        min_value=0.1,
+        max_value=1.0,
+        value=0.6,
+        step=0.05,
+        key=f"{key_prefix}-mask-opacity-{widget_suffix}",
+    )
+
+    overlay_image = _render_mask_overlay_image(selected_record, features, opacity=opacity)
+    if overlay_image is not None:
+        st.image(
+            overlay_image,
+            caption=f"Mask overlay for image {selected_idx}",
+            use_column_width=True,
+        )
+    else:
+        st.warning("Unable to render mask overlay for the selected record.")
+
+    legend_clusters = _collect_mask_clusters(features)
+    if legend_clusters:
+        legend_cols = st.columns(min(len(legend_clusters), 4))
+        for idx, cluster_value in enumerate(legend_clusters):
+            color_hex = _mask_cluster_hex(cluster_value)
+            label = _format_cluster_label(cluster_value)
+            legend_cols[idx % len(legend_cols)].markdown(
+                f"<div style='background:{color_hex};padding:0.4em;border-radius:4px;color:white;text-align:center;'>"
+                f"{label}</div>",
+                unsafe_allow_html=True,
+            )
+
+    table = _mask_feature_dataframe(features)
+    if not table.empty:
+        st.dataframe(table)
+    else:
+        st.info("Mask features are not available for this record.")
+
+    _render_mask_downloads(
+        features,
+        selected_record.get("image_path"),
+        key_prefix=f"{key_prefix}-mask-download-{widget_suffix}-{selected_idx}",
+    )
+
+    return True
+
+
+def _collect_mask_clusters(features: List[Dict[str, Any]]) -> List[int]:
+    clusters: set[int] = set()
+    for feature in features:
+        value = feature.get("cluster")
+        if value is None:
+            continue
+        try:
+            clusters.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    if -1 in clusters:
+        ordered = [-1] + sorted(val for val in clusters if val != -1)
+    else:
+        ordered = sorted(clusters)
+    return ordered
+
+
+def _mask_cluster_hex(cluster: int) -> str:
+    if cluster < 0:
+        return "#808080"
+    palette = _MASK_CLUSTER_COLORS
+    return palette[cluster % len(palette)]
+
+
+def _mask_cluster_color(cluster: Any, opacity: float) -> Tuple[int, int, int, int]:
+    try:
+        cluster_index = int(cluster)
+    except (TypeError, ValueError):
+        cluster_index = -1
+    base_hex = _mask_cluster_hex(cluster_index)
+    r, g, b = ImageColor.getrgb(base_hex)
+    alpha = int(max(0.05, min(1.0, opacity)) * 255)
+    return (r, g, b, alpha)
+
+
+def _mask_feature_dataframe(features: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        embedding = feature.get("embedding")
+        umap_value = feature.get("umap") or [None, None]
+        rows.append(
+            {
+                "id": feature.get("id"),
+                "area": feature.get("area"),
+                "score": feature.get("score"),
+                "cluster": feature.get("cluster"),
+                "prompt": feature.get("prompt"),
+                "bbox": feature.get("bbox"),
+                "umap_x": umap_value[0] if isinstance(umap_value, (list, tuple)) else None,
+                "umap_y": umap_value[1] if isinstance(umap_value, (list, tuple)) else None,
+                "embedding_dim": len(embedding) if isinstance(embedding, list) else None,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def _render_mask_downloads(
+    features: List[Dict[str, Any]], image_path: Any, *, key_prefix: str
+) -> None:
+    download_cols = st.columns(max(1, min(len(features), 3))) if features else []
+    for idx, feature in enumerate(features):
+        mask_path = feature.get("mask_path")
+        if not mask_path:
+            continue
+        resolved = _resolve_mask_path(image_path, mask_path)
+        if resolved is None or not resolved.exists():
+            continue
+        try:
+            data = resolved.read_bytes()
+        except OSError:
+            continue
+        column = download_cols[idx % len(download_cols)] if download_cols else st
+        label = f"Mask {feature.get('id') or idx}"
+        column.download_button(
+            label=f"Download {label}",
+            data=data,
+            file_name=resolved.name,
+            mime="image/png",
+            key=f"{key_prefix}-{idx}",
+        )
+
+
+def _render_mask_overlay_image(
+    record: Dict[str, Any],
+    features: List[Dict[str, Any]],
+    *,
+    opacity: float,
+) -> Optional[Image.Image]:
+    image_path = record.get("image_path")
+    if not image_path:
+        return None
+    resolved_image = _resolve_path(image_path)
+    if resolved_image is None or not resolved_image.exists():
+        return None
+
+    try:
+        with Image.open(resolved_image) as base_img:
+            base = base_img.convert("RGBA")
+    except (OSError, ValueError):
+        return None
+
+    composite = base.copy()
+    for feature in features:
+        mask_path = feature.get("mask_path")
+        if not mask_path:
+            continue
+        resolved_mask = _resolve_mask_path(image_path, mask_path)
+        if resolved_mask is None or not resolved_mask.exists():
+            continue
+        try:
+            with Image.open(resolved_mask) as mask_img:
+                mask_image = mask_img.convert("L")
+        except (OSError, ValueError):
+            continue
+        if mask_image.size != composite.size:
+            mask_image = mask_image.resize(composite.size, Image.NEAREST)
+        color = _mask_cluster_color(feature.get("cluster"), opacity)
+        overlay = Image.new("RGBA", composite.size, color)
+        alpha_value = int(max(0.05, min(1.0, opacity)) * color[3])
+        alpha_mask = mask_image.point(lambda px: alpha_value if px > 0 else 0)
+        overlay.putalpha(alpha_mask)
+        composite = Image.alpha_composite(composite, overlay)
+    return composite
+
+
+def _resolve_mask_path(image_path: Any, mask_path: Any) -> Optional[Path]:
+    resolved_mask = _resolve_path(mask_path)
+    if resolved_mask and resolved_mask.exists():
+        return resolved_mask
+    try:
+        mask_candidate = Path(str(mask_path))
+    except (TypeError, ValueError):
+        return None
+    try:
+        image_parent = Path(str(image_path)).resolve().parent
+    except (TypeError, ValueError):
+        image_parent = None
+    if image_parent is not None:
+        candidate = (image_parent / mask_candidate).resolve()
+        if candidate.exists():
+            return candidate
+    return mask_candidate if mask_candidate.exists() else None
+
+
+def _resolve_path(value: Any) -> Optional[Path]:
+    if not value:
+        return None
+    try:
+        path = Path(str(value)).expanduser()
+    except (TypeError, ValueError):
+        return None
+    if path.is_absolute():
+        return path
+    candidate = (_REPO_ROOT / path).resolve()
+    return candidate
+
+
 def _extract_artifact_run_identifier(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -1834,6 +2323,16 @@ with main_col:
         st.markdown("### Preview output")
         preview = st.session_state.preview_result
         records = preview.get("records") or []
+        preview_artifacts = preview.get("artifacts") if isinstance(preview, dict) else None
+        if records:
+            render_cluster_view(
+                records,
+                key_prefix="preview",
+                dataset_kind=dataset_kind,
+                artifacts=preview_artifacts,
+            )
+            if dataset_kind == "images":
+                render_mask_analytics(records, preview_artifacts, key_prefix="preview")
         if records:
             if dataset_kind == "images":
                 _render_image_preview_table(records, st.session_state.plan_ops)
@@ -1845,7 +2344,6 @@ with main_col:
         if schema:
             st.json(schema)
         st.json(preview)
-        preview_artifacts = preview.get("artifacts") if isinstance(preview, dict) else None
         preview_displayed = False
         if dataset_kind == "images":
             captions_path = None
@@ -1865,6 +2363,16 @@ with main_col:
         result = st.session_state.execute_result
         artifacts = result.get("artifacts") or {}
         run_dir = _extract_run_directory(artifacts)
+        records = result.get("records") or []
+        if records:
+            render_cluster_view(
+                records,
+                key_prefix="execute",
+                dataset_kind=dataset_kind,
+                artifacts=artifacts,
+            )
+            if dataset_kind == "images":
+                render_mask_analytics(records, artifacts, key_prefix="execute")
 
         if result.get("ok"):
             st.success("Execution finished")
