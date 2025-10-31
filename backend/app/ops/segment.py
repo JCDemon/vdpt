@@ -6,14 +6,13 @@ import logging
 import os
 import hashlib
 from functools import lru_cache
+from importlib import import_module, util
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Mapping, Optional
 
 import numpy as np
 import torch
 from PIL import Image
-from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
-from transformers import CLIPSegForImageSegmentation, CLIPSegProcessor
 
 from ..types import Mask
 from .base import OperationHandler
@@ -21,6 +20,35 @@ from .registry import register
 
 
 logger = logging.getLogger(__name__)
+
+
+if TYPE_CHECKING:  # pragma: no cover - only for static typing
+    from segment_anything import SamAutomaticMaskGenerator  # noqa: F401
+    from segment_anything import sam_model_registry as _sam_model_registry  # noqa: F401
+    from transformers import (  # noqa: F401
+        CLIPSegForImageSegmentation,
+        CLIPSegProcessor,
+    )
+
+
+def _require_segment_anything() -> Any:
+    """Load segment_anything lazily so optional dependency tests can pass."""
+
+    if util.find_spec("segment_anything") is None:
+        raise ImportError(
+            "segment_anything is required for SAM segmentation; install the optional dependency"
+        )
+    return import_module("segment_anything")
+
+
+def _require_transformers() -> Any:
+    """Load transformers lazily since it is an optional dependency."""
+
+    if util.find_spec("transformers") is None:
+        raise ImportError(
+            "transformers is required for CLIPSeg segmentation; install the optional dependency"
+        )
+    return import_module("transformers")
 
 
 def _select_device() -> torch.device:
@@ -55,6 +83,8 @@ def _load_sam_model(checkpoint_path: Path, model_type: str) -> torch.nn.Module:
 def _load_sam_model_cached(
     key: tuple[str, str], checkpoint_path: Path, model_type: str
 ) -> torch.nn.Module:
+    segment_anything = _require_segment_anything()
+    sam_model_registry = getattr(segment_anything, "sam_model_registry")
     if model_type not in sam_model_registry:
         raise ValueError(f"Unsupported SAM model type: {model_type}")
     sam = sam_model_registry[model_type](checkpoint=str(checkpoint_path))
@@ -74,14 +104,17 @@ def _load_image(image_path: str | Path) -> np.ndarray:
 
 
 _CLIPSEG_MODEL_NAME = "CIDAS/clipseg-rd64-refined"
-_CLIPSEG_MODEL: Optional[CLIPSegForImageSegmentation] = None
-_CLIPSEG_PROCESSOR: Optional[CLIPSegProcessor] = None
+_CLIPSEG_MODEL: Optional[Any] = None
+_CLIPSEG_PROCESSOR: Optional[Any] = None
 _CLIPSEG_DEVICE: Optional[torch.device] = None
 
 
 def _load_clipseg(
     model_name: str,
 ) -> tuple[CLIPSegForImageSegmentation, CLIPSegProcessor, torch.device]:
+    transformers = _require_transformers()
+    processor_cls = getattr(transformers, "CLIPSegProcessor")
+    model_cls = getattr(transformers, "CLIPSegForImageSegmentation")
     global _CLIPSEG_MODEL, _CLIPSEG_PROCESSOR, _CLIPSEG_DEVICE
     if (
         _CLIPSEG_MODEL is None
@@ -90,8 +123,8 @@ def _load_clipseg(
         or getattr(_CLIPSEG_MODEL, "name_or_path", None) != model_name
     ):
         device = _select_device()
-        processor = CLIPSegProcessor.from_pretrained(model_name)
-        model = CLIPSegForImageSegmentation.from_pretrained(model_name)
+        processor = processor_cls.from_pretrained(model_name)
+        model = model_cls.from_pretrained(model_name)
         model.to(device)
         model.eval()
         _CLIPSEG_MODEL = model
@@ -181,7 +214,9 @@ def sam_segment(
     checkpoint = Path(checkpoint_path)
     sam = _load_sam_model(checkpoint, model_type)
     generator_kwargs = dict(generator_params or {})
-    mask_generator = SamAutomaticMaskGenerator(sam, **generator_kwargs)
+    segment_anything = _require_segment_anything()
+    mask_generator_cls = getattr(segment_anything, "SamAutomaticMaskGenerator")
+    mask_generator = mask_generator_cls(sam, **generator_kwargs)
     image = _load_image(image_path)
     raw_masks = mask_generator.generate(image)
     masks: list[Mask] = []
