@@ -28,7 +28,7 @@ When Streamlit shows the local URL (usually `http://localhost:8501`), open it in
 Inside the UI sidebar, choose **Images** under **Dataset type**. The sidebar now shows upload controls plus the bundled helpers.
 
 Confirm the helper caption lists three bundled assets located at `artifacts/bundled_images/`. The UI writes
-tiny placeholder PNGs into that directory automatically the first time you open Images mode, so no manual
+tiny placeholder PPM images into that directory automatically the first time you open Images mode, so no manual
 setup is required.
 
 ## 4. Load the bundled sample plan
@@ -37,11 +37,11 @@ Click **Load sample plan (images)**. The app should immediately:
 
 - Populate the operations list with two steps: `img_caption` (instructions `用一句中文描述图片内容`,
   max tokens 80) and `img_resize` (width/height `384`, keep ratio enabled).
-- Select the bundled images (`forest.png`, `ocean.png`, `sunrise.png`) and show their thumbnails in the main panel.
+- Select the bundled images (`forest.ppm`, `ocean.ppm`, `sunrise.ppm`) and show their thumbnails in the main panel.
 - Adjust the **Preview sample size** slider to 3.
 
 If any of those conditions fail, make sure the Streamlit process has permission to write to
-`artifacts/bundled_images/` so it can regenerate the placeholder PNG files.
+`artifacts/bundled_images/` so it can regenerate the placeholder PPM files.
 
 ## 5. Run Preview
 
@@ -50,7 +50,7 @@ Press **Preview**. The backend receives a `/preview` request that references onl
 In the **Preview output** section, confirm the rendered table has:
 
 - A **Thumb** column that displays 64px thumbnails of each bundled image.
-- A **Filename** column listing `forest.png`, `ocean.png`, and `sunrise.png`.
+- A **Filename** column listing `forest.ppm`, `ocean.ppm`, and `sunrise.ppm`.
 - A **Caption** column filled by the `img_caption` step (Chinese one-sentence descriptions).
 - A **Resized path** column pointing to temporary files under `artifacts/tmp/.../img_resize/`.
 
