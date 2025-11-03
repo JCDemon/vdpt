@@ -29,6 +29,8 @@ import requests
 import streamlit as st
 from PIL import Image
 
+from ui.sample_data import load_sample_plan as _load_sample_plan, ensure_sample_assets
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from ui.utils.keys import unique_key
@@ -79,12 +81,8 @@ _BUNDLED_IMAGE_PAYLOADS = {
 SAMPLE_CSV_CANDIDATES: List[Path] = [
     Path(__file__).resolve().with_name("sample.csv"),
     _REPO_ROOT / "data" / "sample_news.csv",
+    Path("artifacts") / "uploads" / "sample_news.csv",
     Path(__file__).resolve().parents[1] / "tests" / "assets" / "sample.csv",
-]
-SAMPLE_PLAN_CANDIDATES: List[Path] = [
-    Path(__file__).resolve().with_name("sample_plan.json"),
-    _REPO_ROOT / "samples" / "plan_news_summarize.json",
-    Path(__file__).resolve().parents[1] / "tests" / "assets" / "sample_plan.json",
 ]
 
 IMAGE_SAMPLE_PLAN: Dict[str, Any] = {
@@ -195,6 +193,21 @@ if "selected_run_id" not in st.session_state:
     st.session_state.selected_run_id = None
 
 
+ensure_sample_assets()
+
+
+def _sanitize_streamlit_key(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "-" for ch in value)
+
+
+def _unique_widget_key(*parts: Any) -> str:
+    text_parts = [str(part) for part in parts if part not in (None, "")]
+    sanitized = "-".join(_sanitize_streamlit_key(part) for part in text_parts if part)
+    if not sanitized:
+        sanitized = "key"
+    return unique_key(sanitized)
+
+
 def _render_project_tree_sidebar() -> None:
     tree_state = st.session_state.project_tree
     section_nodes: Dict[str, List[Dict[str, Any]]] = {
@@ -214,7 +227,7 @@ def _render_tree_section(
     label: str,
 ) -> None:
     is_expanded: bool = tree_state["expanded"].get(section_id, True)
-    toggle_key = f"tree-section-toggle-{section_id}"
+    toggle_key = _unique_widget_key("tree-section-toggle", section_id)
     toggle_label = f"{'▼' if is_expanded else '▶'} {label}"
     if st.sidebar.button(toggle_label, key=toggle_key, use_container_width=True):
         tree_state["expanded"][section_id] = not is_expanded
@@ -251,7 +264,7 @@ def _render_tree_node(
     if badge:
         button_label = f"{button_label} · {badge}"
 
-    button_key = f"tree-node-{section_id}-{node_id}"
+    button_key = _unique_widget_key("tree-node", section_id, node_id)
     if container.button(button_label, key=button_key, use_container_width=True):
         _activate_tree_node(tree_state, section_id, node, trigger_rerun=True)
         return
@@ -411,6 +424,60 @@ def _dataset_tree_nodes() -> List[Dict[str, Any]]:
     return nodes
 
 
+def _normalize_sample_plan(plan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not plan:
+        return None
+
+    normalized: Dict[str, Any] = {
+        "id": plan.get("id", "sample-plan"),
+        "name": plan.get("name", "Sample Plan"),
+    }
+
+    ops: List[Dict[str, Any]] = []
+    if isinstance(plan.get("ops"), list):
+        for op in plan.get("ops", []):  # type: ignore[arg-type]
+            if not isinstance(op, dict):
+                continue
+            kind = op.get("kind")
+            if not kind:
+                continue
+            params = dict(op.get("params") or {})
+            ops.append({"kind": kind, "params": params})
+    else:
+        for op in plan.get("operations", []):  # type: ignore[arg-type]
+            if not isinstance(op, dict):
+                continue
+            kind = op.get("kind")
+            if not kind:
+                continue
+            params: Dict[str, Any] = {}
+            if "field" in op:
+                params["field"] = op.get("field")
+            if "instructions" in op:
+                params["instructions"] = op.get("instructions")
+            if "max_tokens" in op:
+                try:
+                    params["max_tokens"] = int(op.get("max_tokens"))
+                except (TypeError, ValueError):
+                    pass
+            for key, value in op.items():
+                if key in {"kind", "field", "instructions", "max_tokens"}:
+                    continue
+                params[key] = value
+            ops.append({"kind": kind, "params": params})
+
+    normalized["ops"] = ops
+    dataset = plan.get("dataset")
+    if isinstance(dataset, dict):
+        normalized["dataset"] = dataset
+    else:
+        normalized["dataset"] = {}
+    if "limit" in plan:
+        normalized["limit"] = plan.get("limit")
+
+    return normalized
+
+
 def _plan_tree_nodes() -> List[Dict[str, Any]]:
     nodes: List[Dict[str, Any]] = []
     plan_ops = st.session_state.get("plan_ops") or []
@@ -423,7 +490,13 @@ def _plan_tree_nodes() -> List[Dict[str, Any]]:
                 "payload": {"ops": plan_ops},
             }
         )
-    sample_plan = _load_sample_plan()
+    try:
+        raw_sample_plan = _load_sample_plan()
+    except Exception as e:
+        st.warning(f"Failed to load sample plan: {e}")
+        raw_sample_plan = {"id": "empty", "name": "Empty", "operations": []}
+
+    sample_plan = _normalize_sample_plan(raw_sample_plan)
     if sample_plan:
         nodes.append(
             {
@@ -511,50 +584,6 @@ def _ensure_bundled_images_present() -> None:
                 target.write_text(str(payload))
         except OSError as exc:
             st.warning(f"Failed to write bundled image {filename}: {exc}")
-
-
-def _load_sample_plan() -> Optional[Dict[str, Any]]:
-    plan_path = _find_first_existing(SAMPLE_PLAN_CANDIDATES)
-    if not plan_path:
-        return None
-    try:
-        payload = json.loads(plan_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    ops: List[Dict[str, Any]] = []
-    for op in payload.get("ops", []):
-        kind = op.get("kind")
-        params: Dict[str, Any] = {}
-        params.update(op.get("params") or {})
-        if kind == "summarize":
-            params.update(op.get("summarize") or {})
-            ops.append(
-                {
-                    "kind": "summarize",
-                    "params": {
-                        "field": params.get("field", ""),
-                        "instructions": params.get("instructions", ""),
-                        "max_tokens": int(params.get("max_tokens", 128) or 128),
-                    },
-                }
-            )
-        elif kind == "classify":
-            params.update(op.get("classify") or {})
-            labels = params.get("labels") or []
-            if not isinstance(labels, list):
-                labels = [str(labels)]
-            ops.append(
-                {
-                    "kind": "classify",
-                    "params": {
-                        "field": params.get("field", ""),
-                        "labels": [str(label) for label in labels],
-                    },
-                }
-            )
-    dataset = payload.get("dataset") or {}
-    return {"ops": ops, "dataset": dataset}
 
 
 def _fetch_dataset_loaders(backend_url: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
@@ -1301,18 +1330,6 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
 
 
 # --- helpers: operation details ---
-
-
-def _sanitize_streamlit_key(value: str) -> str:
-    return "".join(ch if ch.isalnum() else "-" for ch in value)
-
-
-def _unique_widget_key(*parts: Any) -> str:
-    text_parts = [str(part) for part in parts if part not in (None, "")]
-    sanitized = "-".join(_sanitize_streamlit_key(part) for part in text_parts if part)
-    if not sanitized:
-        sanitized = "key"
-    return unique_key(sanitized)
 
 
 @st.cache_data(show_spinner=False)
@@ -2387,7 +2404,13 @@ if dataset_kind == "csv":
         use_sample = True
         st.sidebar.caption(f"Using sample at {sample_csv_path}")
 
-    sample_plan_data = _load_sample_plan()
+    try:
+        raw_sample_plan = _load_sample_plan()
+    except Exception as exc:
+        st.sidebar.warning(f"Failed to load sample plan: {exc}")
+        raw_sample_plan = None
+
+    sample_plan_data = _normalize_sample_plan(raw_sample_plan)
     if st.sidebar.button("Load sample plan", disabled=sample_plan_data is None):
         if sample_plan_data:
             st.session_state.plan_ops = sample_plan_data.get("ops", [])  # type: ignore[assignment]
@@ -2399,6 +2422,10 @@ if dataset_kind == "csv":
                 except (TypeError, ValueError):
                     pass
             dataset_path = dataset.get("path")
+            if not dataset_path:
+                candidate_path = Path("artifacts") / "uploads" / "sample_news.csv"
+                if candidate_path.exists():
+                    dataset_path = candidate_path
             if dataset_path:
                 st.session_state.dataset_path = str(dataset_path)
             st.sidebar.success("Sample plan loaded")
@@ -2494,7 +2521,8 @@ else:
                 continue
             cols = st.sidebar.columns([4, 1])
             cols[0].write(f"{path.name} ({_format_size(path.stat().st_size)})")
-            if cols[1].button("Remove", key=f"remove_{rel_path}"):
+            remove_key = _unique_widget_key("remove-image", rel_path)
+            if cols[1].button("Remove", key=remove_key):
                 st.session_state.selected_images = [
                     item for item in st.session_state.selected_images if item != rel_path
                 ]
@@ -2729,7 +2757,7 @@ with main_col:
                     else:
                         params["height"] = int(height_value)
 
-            remove_key = f"remove_{dataset_kind}_{idx}"
+            remove_key = _unique_widget_key("remove-op", dataset_kind, idx)
             if st.button("Remove", key=remove_key):
                 st.session_state.plan_ops.pop(idx)
                 st.rerun()  # refresh UI with stable API
