@@ -54,6 +54,8 @@ htmlcov/
 artifacts/*
 !artifacts/bundled_images/
 !artifacts/bundled_images/**
+!artifacts/sample_data/
+!artifacts/sample_data/**
 !artifacts/preview_mask_analytics.json
 
 

@@ -3,7 +3,7 @@ import os
 import random
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Sequence, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Sequence, Tuple, cast
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -13,6 +13,7 @@ from ..schemas import TodoCreate, TodoRead
 from backend.vdpt import providers
 from ..vdpt.io import read_csv, sha256_bytes, write_csv
 from ..services import TodoService
+from .datasets import DatasetLoader, registry
 from .preview.preview_engine import (
     preview_classify,
     preview_dataset,
@@ -32,9 +33,97 @@ __version__ = "0.1.0"
 
 todo_service = TodoService()
 
+_dataset_scan_cache: Dict[Tuple[str, Tuple[Tuple[str, Any], ...]], List[Dict[str, Any]]] = {}
+_dataset_preview_cache: Dict[
+    Tuple[str, Tuple[Tuple[str, Any], ...], int],
+    List[Dict[str, Any]],
+] = {}
+
+
+def _normalize_cache_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple(sorted((key, _normalize_cache_value(val)) for key, val in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_normalize_cache_value(item) for item in value)
+    return value
+
+
+def _make_cache_key(loader_id: str, config: Dict[str, Any], limit: Optional[int] = None):
+    config_key = tuple(
+        sorted((key, _normalize_cache_value(value)) for key, value in config.items())
+    )
+    if limit is None:
+        return loader_id, config_key
+    return loader_id, config_key, limit
+
+
+def _instantiate_loader(loader_id: str, config: Dict[str, Any]) -> DatasetLoader:
+    try:
+        loader_cls = registry.get(loader_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    try:
+        return loader_cls(**config)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+class DatasetPreviewRequest(BaseModel):
+    loader: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    limit: int = Field(default=12, ge=1, le=64)
+    refresh: bool = False
+
 
 def get_service() -> TodoService:
     return todo_service
+
+
+def list_dataset_loaders() -> Dict[str, Any]:
+    loaders = [loader_cls.metadata() for loader_cls in registry.all()]
+    return {"loaders": loaders}
+
+
+def preview_dataset_records(payload: DatasetPreviewRequest) -> Dict[str, Any]:
+    loader = _instantiate_loader(payload.loader, payload.config)
+
+    scan_key = _make_cache_key(payload.loader, payload.config)
+    if not payload.refresh and scan_key in _dataset_scan_cache:
+        scan_results = _dataset_scan_cache[scan_key]
+        scan_cached = True
+    else:
+        try:
+            scan_results = list(loader.scan())
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        _dataset_scan_cache[scan_key] = scan_results
+        scan_cached = False
+
+    preview_key = _make_cache_key(payload.loader, payload.config, payload.limit)
+    if not payload.refresh and preview_key in _dataset_preview_cache:
+        records = _dataset_preview_cache[preview_key]
+        preview_cached = True
+    else:
+        try:
+            records = list(loader.iter_records(limit=payload.limit))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        _dataset_preview_cache[preview_key] = records
+        preview_cached = False
+
+    return {
+        "loader": payload.loader,
+        "config": payload.config,
+        "records": records,
+        "count": len(records),
+        "scan": scan_results,
+        "cached": {"scan": scan_cached, "preview": preview_cached},
+        "summary": f"returned {len(records)} record(s)",
+    }
 
 
 class Operation(BaseModel):
@@ -826,6 +915,8 @@ def create_app() -> FastAPI:
     app.get("/health", tags=["health"])(health)
     app.get("/config", tags=["config"])(config)
     app.get("/provenance/snapshot", tags=["provenance"])(provenance_snapshot)
+    app.get("/datasets/list", tags=["datasets"])(list_dataset_loaders)
+    app.post("/datasets/preview", tags=["datasets"])(preview_dataset_records)
     app.post("/preview", tags=["preview"])(preview_api)
     app.post("/execute", tags=["execute"])(execute)
 

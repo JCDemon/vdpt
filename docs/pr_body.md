@@ -1,7 +1,8 @@
 ## Summary
-- add OpenCLIP text and image embedding operations with disk caching for preview runs
-- reduce embeddings with UMAP, cluster with HDBSCAN, and expose new artifacts
-- surface a Streamlit cluster view with interactive point inspection
+- introduce a dataset loader registry with scan/preview support in the backend
+- add COCO 2017, Cityscapes fine, and HuggingFace image dataset loader implementations
+- expose `/datasets/list` and `/datasets/preview` APIs with simple caching to power UI previews
+- add a Streamlit dataset picker sidebar that renders a 12-image preview grid with metadata
 
 ## Testing
 - `python -m compileall backend/app`
@@ -9,24 +10,18 @@
 
 ## Manual verification
 ```bash
-curl -s http://127.0.0.1:8000/preview -H 'Content-Type: application/json' -d '{
-  "dataset":{"type":"csv","path":"artifacts/uploads/sample_news.csv"},
-  "preview_sample_size": 50,
-  "operations":[
-    {"kind":"field","field":"text"},
-    {"kind":"embed_text","field":"text"},
-    {"kind":"umap","source":"embedding"},
-    {"kind":"hdbscan","source":"umap"}
-  ]}' | jq '.artifacts | keys'
+uvicorn backend.app.main:app --reload
 ```
 
 ```bash
-curl -s http://127.0.0.1:8000/preview -H 'Content-Type: application/json' -d '{
-  "dataset":{"type":"images","path":"artifacts/bundled_images"},
-  "preview_sample_size": 20,
-  "operations":[
-    {"kind":"embed_image"},
-    {"kind":"umap","source":"embedding"},
-    {"kind":"hdbscan","source":"umap"}
-  ]}' | jq '.artifacts | keys'
+streamlit run ui/streamlit_app.py
 ```
+
+1. In the Streamlit sidebar, set the backend URL to `http://127.0.0.1:8000`.
+2. Open the **Datasets** panel, pick the **COCO 2017** loader, and point it at `artifacts/sample_data/coco2017_tiny`.
+3. Click **Preview dataset** to render the 12-sample thumbnail grid.
+4. Repeat with the **HuggingFace datasets** loader using `beans` as the dataset name.
+
+## Notes
+- Cityscapes access requires registration and acceptance of the license terms: https://www.cityscapes-dataset.com/
+- HuggingFace datasets require the `datasets` Python package and internet connectivity for first-time downloads.

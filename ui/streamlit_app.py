@@ -152,6 +152,18 @@ if "use_bundled_images" not in st.session_state:
     st.session_state.use_bundled_images = False
 if "previous_images_state" not in st.session_state:
     st.session_state.previous_images_state = None
+if "dataset_loader_state" not in st.session_state:
+    st.session_state.dataset_loader_state = {"backend": None, "loaders": [], "error": None}
+if "dataset_loader_id" not in st.session_state:
+    st.session_state.dataset_loader_id = ""
+if "dataset_loader_configs" not in st.session_state:
+    st.session_state.dataset_loader_configs = {}
+if "dataset_loader_limit" not in st.session_state:
+    st.session_state.dataset_loader_limit = 12
+if "dataset_loader_preview" not in st.session_state:
+    st.session_state.dataset_loader_preview = None
+if "dataset_loader_preview_error" not in st.session_state:
+    st.session_state.dataset_loader_preview_error = None
 if "prov_counts" not in st.session_state:
     st.session_state.prov_counts = {}  # type: ignore[attr-defined]
 if "prov_history" not in st.session_state:
@@ -532,6 +544,309 @@ def _load_sample_plan() -> Optional[Dict[str, Any]]:
             )
     dataset = payload.get("dataset") or {}
     return {"ops": ops, "dataset": dataset}
+
+
+def _fetch_dataset_loaders(backend_url: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    url = backend_url.rstrip("/") + "/datasets/list"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        return [], str(exc)
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        return [], f"Failed to decode loader list: {exc}"
+
+    loaders = payload.get("loaders")
+    if not isinstance(loaders, list):
+        return [], "Backend did not return a loader list"
+
+    normalized: List[Dict[str, Any]] = []
+    for entry in loaders:
+        if isinstance(entry, dict):
+            normalized.append(entry)
+    return normalized, None
+
+
+def _request_dataset_preview(
+    backend_url: str,
+    loader_id: str,
+    config: Dict[str, Any],
+    limit: int,
+    refresh: bool,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    url = backend_url.rstrip("/") + "/datasets/preview"
+    payload: Dict[str, Any] = {"loader": loader_id, "config": config, "limit": limit}
+    if refresh:
+        payload["refresh"] = True
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        return None, str(exc)
+
+    try:
+        return response.json(), None
+    except ValueError as exc:
+        return None, f"Failed to decode preview response: {exc}"
+
+
+def _render_dataset_loader_sidebar(backend_url: str) -> None:
+    container = st.sidebar.container()
+    container.markdown("### Datasets")
+
+    loader_state = st.session_state.dataset_loader_state
+    refresh_requested = container.button(
+        "Refresh loaders",
+        key="dataset_loader_refresh_button",
+    )
+    if refresh_requested:
+        loader_state["backend"] = None
+
+    if loader_state.get("backend") != backend_url:
+        loaders, error = _fetch_dataset_loaders(backend_url)
+        loader_state["backend"] = backend_url
+        loader_state["loaders"] = loaders
+        loader_state["error"] = error
+
+    loaders = loader_state.get("loaders") or []
+    error_message = loader_state.get("error")
+    if error_message:
+        container.warning(f"Unable to load dataset loaders: {error_message}")
+
+    if not loaders:
+        container.info("No dataset loaders available from the backend.")
+        return
+
+    loader_ids = [str(loader.get("id", "")) for loader in loaders]
+    loader_labels = [
+        f"{loader.get('name') or loader_id} ({loader_id})"
+        for loader, loader_id in zip(loaders, loader_ids)
+    ]
+
+    selected_id = st.session_state.dataset_loader_id
+    if selected_id not in loader_ids:
+        selected_id = loader_ids[0]
+    selected_index = loader_ids.index(selected_id)
+
+    chosen_label = container.selectbox(
+        "Loader",
+        options=loader_labels,
+        index=selected_index,
+        key="dataset_loader_select",
+    )
+    selected_index = loader_labels.index(chosen_label)
+    selected_id = loader_ids[selected_index]
+
+    if selected_id != st.session_state.dataset_loader_id:
+        st.session_state.dataset_loader_id = selected_id
+        st.session_state.dataset_loader_preview = None
+        st.session_state.dataset_loader_preview_error = None
+
+    loader_definition = loaders[selected_index]
+    description = loader_definition.get("description")
+    if description:
+        container.caption(description)
+
+    config_store: Dict[str, Dict[str, Any]] = st.session_state.dataset_loader_configs
+    config = dict(config_store.get(selected_id, {}))
+    params = loader_definition.get("params") or []
+    for param in params:
+        name = str(param.get("name"))
+        label = param.get("label") or name
+        help_text = param.get("description")
+        kind = param.get("kind", "string")
+        default_value = param.get("default")
+        choices = param.get("choices") or []
+        widget_key = f"dataset_loader_param_{selected_id}_{name}"
+
+        value = config.get(name, default_value)
+        if kind == "select" and choices:
+            str_choices = [str(choice) for choice in choices]
+            if value not in str_choices:
+                value = str_choices[0] if str_choices else ""
+            selected_choice = container.selectbox(
+                label,
+                options=str_choices,
+                index=str_choices.index(value) if value in str_choices else 0,
+                key=widget_key,
+                help=help_text,
+            )
+            config[name] = selected_choice
+        else:
+            text_value = container.text_input(
+                label,
+                value=str(value) if value is not None else "",
+                key=widget_key,
+                help=help_text,
+            )
+            config[name] = text_value.strip()
+
+    config_store[selected_id] = config
+
+    limit_value = container.slider(
+        "Samples to preview",
+        min_value=1,
+        max_value=12,
+        value=int(st.session_state.dataset_loader_limit),
+        key=f"dataset_loader_limit_{selected_id}",
+    )
+    st.session_state.dataset_loader_limit = int(limit_value)
+
+    refresh_preview = container.checkbox(
+        "Force refresh",
+        value=False,
+        key=f"dataset_loader_refresh_preview_{selected_id}",
+        help="Bypass cached results on the backend.",
+    )
+
+    existing_preview = st.session_state.dataset_loader_preview
+    if (
+        existing_preview
+        and isinstance(existing_preview, dict)
+        and existing_preview.get("loader") == selected_id
+        and existing_preview.get("summary")
+    ):
+        container.caption(f"Last preview: {existing_preview['summary']}")
+
+    if st.session_state.dataset_loader_preview_error:
+        container.error(st.session_state.dataset_loader_preview_error)
+
+    if container.button(
+        "Preview dataset",
+        key=f"dataset_loader_preview_button_{selected_id}",
+    ):
+        sanitized_config = {key: value for key, value in config.items() if value not in ("", None)}
+        preview, error = _request_dataset_preview(
+            backend_url,
+            selected_id,
+            sanitized_config,
+            int(limit_value),
+            refresh_preview,
+        )
+        if error:
+            st.session_state.dataset_loader_preview = None
+            st.session_state.dataset_loader_preview_error = error
+            container.error(f"Preview failed: {error}")
+        else:
+            st.session_state.dataset_loader_preview = preview
+            st.session_state.dataset_loader_preview_error = None
+            if preview and preview.get("summary"):
+                container.success(preview["summary"])
+
+
+def _preview_caption_from_record(record: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    file_name = record.get("file_name")
+    if file_name:
+        parts.append(str(file_name))
+    image_id = record.get("image_id")
+    if image_id and not file_name:
+        parts.append(f"ID {image_id}")
+    city = record.get("city")
+    if city:
+        parts.append(str(city))
+
+    annotations = record.get("annotations")
+    if isinstance(annotations, list):
+        categories: List[str] = []
+        for item in annotations:
+            if not isinstance(item, dict):
+                continue
+            category = item.get("category") or item.get("label")
+            if category and category not in categories:
+                categories.append(str(category))
+            if len(categories) >= 3:
+                break
+        if categories:
+            parts.append(", ".join(categories))
+
+    objects = record.get("objects")
+    if isinstance(objects, list):
+        labels: List[str] = []
+        for item in objects:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("label")
+            if label and label not in labels:
+                labels.append(str(label))
+            if len(labels) >= 3:
+                break
+        if labels:
+            parts.append(", ".join(labels))
+
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        meta_items = []
+        for key, value in list(metadata.items())[:3]:
+            meta_items.append(f"{key}: {value}")
+        if meta_items:
+            parts.append("; ".join(meta_items))
+
+    return " | ".join(parts)
+
+
+def _render_preview_thumbnail(record: Dict[str, Any]) -> None:
+    image_path = record.get("image_path")
+    if not image_path:
+        st.write("No image path in record")
+        return
+
+    path = Path(image_path)
+    if not path.exists():
+        st.warning(f"Missing image: {path}")
+        return
+
+    try:
+        with Image.open(path) as preview_image:
+            st.image(preview_image, use_column_width=True)
+    except Exception as exc:
+        st.error(f"Failed to open image: {exc}")
+        return
+
+    caption = _preview_caption_from_record(record)
+    if caption:
+        st.caption(caption)
+
+
+def _render_dataset_preview(preview: Optional[Dict[str, Any]]) -> None:
+    if not preview:
+        return
+
+    records = preview.get("records") or []
+    summary = preview.get("summary")
+
+    st.markdown("### Dataset preview")
+    if summary:
+        st.caption(summary)
+
+    if not records:
+        st.info("No preview records returned by the loader.")
+        return
+
+    max_items = min(len(records), 12)
+    columns = st.columns(3)
+    for idx in range(max_items):
+        record = records[idx]
+        column = columns[idx % 3]
+        with column:
+            if isinstance(record, dict):
+                _render_preview_thumbnail(record)
+            else:
+                st.write(str(record))
+
+    if len(records) > max_items:
+        st.caption(f"Showing first {max_items} of {len(records)} record(s).")
+
+    scan_results = preview.get("scan")
+    if scan_results:
+        with st.expander("Dataset scan details", expanded=False):
+            st.json(scan_results)
+
+    with st.expander("Preview records (JSON)", expanded=False):
+        st.json(records[:max_items])
 
 
 def _list_bundled_images() -> List[Path]:
@@ -2000,6 +2315,8 @@ def update_provenance_charts(counts: Dict[str, int]) -> None:
 st.sidebar.header("Configuration")
 backend_url = st.sidebar.text_input("Backend URL", DEFAULT_BACKEND_URL)
 
+_render_dataset_loader_sidebar(backend_url)
+
 mode_labels = {"csv": "CSV", "images": "Images"}
 mode_index = ["csv", "images"].index(st.session_state.dataset_kind)
 selected_label = st.sidebar.radio(
@@ -2160,6 +2477,10 @@ with main_col:
         if info_cols[1].button("Clear", key="clear_run_filter"):
             st.session_state.selected_run_id = None
             st.experimental_rerun()
+
+    preview_payload = st.session_state.get("dataset_loader_preview")
+    if isinstance(preview_payload, dict):
+        _render_dataset_preview(preview_payload)
 
     st.subheader("Plan builder")
 
