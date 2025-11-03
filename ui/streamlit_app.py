@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+# --- import path guard (keep tiny) ---
+import pathlib
+import sys
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]  # repo root
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+# (Dev tip) Optional: export PYTHONPATH=$(git rev-parse --show-toplevel)
+# -------------------------------------
+
 import io
 import json
 import zipfile
@@ -9,7 +21,6 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from uuid import uuid4
 
 import altair as alt
 import math
@@ -18,6 +29,9 @@ import requests
 import streamlit as st
 from PIL import Image
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+from ui.utils.keys import unique_key
 from backend.app.run_index import list_runs
 from backend.app.types import RunSummary
 
@@ -27,7 +41,6 @@ TOP_K_PROVENANCE = 5
 UPLOAD_DIR = Path("artifacts") / "uploads"
 IMAGE_UPLOAD_SUBDIR = "images"
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
 BUNDLED_IMAGE_DIR = _REPO_ROOT / "artifacts" / "bundled_images"
 
 _BUNDLED_IMAGE_PAYLOADS = {
@@ -180,8 +193,6 @@ if "mask_segmentation_mode" not in st.session_state:
     st.session_state.mask_segmentation_mode = "sam"
 if "selected_run_id" not in st.session_state:
     st.session_state.selected_run_id = None
-if "mask_download_counter" not in st.session_state:
-    st.session_state.mask_download_counter = 0
 
 
 def _render_project_tree_sidebar() -> None:
@@ -207,7 +218,7 @@ def _render_tree_section(
     toggle_label = f"{'▼' if is_expanded else '▶'} {label}"
     if st.sidebar.button(toggle_label, key=toggle_key, use_container_width=True):
         tree_state["expanded"][section_id] = not is_expanded
-        st.experimental_rerun()
+        st.rerun()
         return
 
     if not is_expanded:
@@ -299,13 +310,13 @@ def _process_tree_nav_key(
         next_index = 0 if selected_index is None else (selected_index + 1) % len(order)
         section_id, node = visible_nodes[next_index]
         _set_selected_tree_node(tree_state, section_id, node)
-        st.experimental_rerun()
+        st.rerun()
         return
     if key == "k":
         prev_index = len(order) - 1 if selected_index is None else (selected_index - 1) % len(order)
         section_id, node = visible_nodes[prev_index]
         _set_selected_tree_node(tree_state, section_id, node)
-        st.experimental_rerun()
+        st.rerun()
         return
     if key == "enter":
         target_index = 0 if selected_index is None else selected_index
@@ -335,7 +346,7 @@ def _activate_tree_node(
     else:
         st.session_state.selected_run_id = None
     if trigger_rerun:
-        st.experimental_rerun()
+        st.rerun()
 
 
 def _format_badge(parts: Iterable[Optional[str]]) -> Optional[str]:
@@ -788,19 +799,42 @@ def _preview_caption_from_record(record: Dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
+def _resolve_preview_image_path(image_value: Any) -> Optional[Path]:
+    if not image_value:
+        return None
+
+    raw_value = str(image_value)
+    candidate = Path(raw_value)
+    if candidate.exists():
+        return candidate
+
+    dataset_payload = st.session_state.get("last_dataset_payload")
+    if isinstance(dataset_payload, dict):
+        base_path = dataset_payload.get("path")
+        if isinstance(base_path, str) and base_path:
+            base_dir = Path(base_path)
+            if not base_dir.is_absolute():
+                base_dir = (Path.cwd() / base_dir).resolve()
+            resolved = base_dir / raw_value
+            if resolved.exists():
+                return resolved
+
+    return candidate
+
+
 def _render_preview_thumbnail(record: Dict[str, Any]) -> None:
-    image_path = record.get("image_path")
-    if not image_path:
+    image_value = record.get("image_path") or record.get("path")
+    image_path = _resolve_preview_image_path(image_value)
+    if image_path is None:
         st.write("No image path in record")
         return
 
-    path = Path(image_path)
-    if not path.exists():
-        st.warning(f"Missing image: {path}")
+    if not image_path.exists():
+        st.warning(f"Missing image: {image_path}")
         return
 
     try:
-        with Image.open(path) as preview_image:
+        with Image.open(image_path) as preview_image:
             st.image(preview_image, use_column_width=True)
     except Exception as exc:
         st.error(f"Failed to open image: {exc}")
@@ -1012,7 +1046,7 @@ def _render_image_preview_table(records: List[Dict[str, Any]], ops: List[Dict[st
     for record in records:
         row_cols = container.columns(column_weights)
         image_value = record.get("image_path")
-        image_path = Path(str(image_value)) if image_value else None
+        image_path = _resolve_preview_image_path(image_value)
         if image_path and image_path.exists():
             row_cols[0].image(str(image_path), width=64)
         elif image_path:
@@ -1248,11 +1282,10 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
     st.write(f"**{label}**")
     st.code(str(p), language="text")
     data = _read_bytes_safe(p)
-    if data is not None:
+    if data:
         mime = "application/json" if p.suffix.lower() == ".json" else "text/plain"
-        safe_label = label.replace(" ", "-")
         key_context = key_suffix or str(p)
-        key_value = f"dl-{safe_label}-{Path(key_context).name}-{p.name}-{uuid4()}"
+        key_value = _unique_widget_key("artifact", label, key_context, p.name)
         st.download_button(
             label=f"Download {p.name}",
             data=data,
@@ -1261,6 +1294,8 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
             use_container_width=True,
             key=key_value,
         )
+    elif data == b"":
+        st.info(f"Artifact {p.name} is empty.")
     else:
         st.info("Artifact not readable from UI process; path is shown for reference.")
 
@@ -1270,6 +1305,14 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
 
 def _sanitize_streamlit_key(value: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in value)
+
+
+def _unique_widget_key(*parts: Any) -> str:
+    text_parts = [str(part) for part in parts if part not in (None, "")]
+    sanitized = "-".join(_sanitize_streamlit_key(part) for part in text_parts if part)
+    if not sanitized:
+        sanitized = "key"
+    return unique_key(sanitized)
 
 
 @st.cache_data(show_spinner=False)
@@ -1334,8 +1377,7 @@ def _format_logs_for_download(entries: Iterable[Dict[str, Any]]) -> str:
 
 
 def _key_with_suffix(base: str, suffix: str) -> str:
-    sanitized = _sanitize_streamlit_key(base)
-    return f"{sanitized}-{suffix}-{uuid4()}"
+    return _unique_widget_key(base, suffix)
 
 
 def render_operation_detail_drawers(section_label: str, payload: Dict[str, Any]) -> None:
@@ -1860,12 +1902,7 @@ def _render_mask_downloads(mask_rows: pd.DataFrame, record_label: str, record_in
         for path in mask_paths:
             archive.write(path, arcname=path.name)
     buffer.seek(0)
-    # Streamlit deduplicates widgets by key; use a monotonically increasing counter
-    # stored in session_state to avoid DuplicateElementKey issues when rerendering.
-    counter_key = "mask_download_counter"
-    counter_value = int(st.session_state.get(counter_key, 0))
-    unique_key = f"mask-download-{record_index}-{counter_value}"
-    st.session_state[counter_key] = counter_value + 1
+    unique_key = _unique_widget_key("mask-download", record_index, record_label)
     st.download_button(
         label=f"Download masks ({record_label})",
         data=buffer.getvalue(),
@@ -2476,7 +2513,7 @@ with main_col:
         info_cols[0].caption(f"Run filter active: {active_run_filter}")
         if info_cols[1].button("Clear", key="clear_run_filter"):
             st.session_state.selected_run_id = None
-            st.experimental_rerun()
+            st.rerun()
 
     preview_payload = st.session_state.get("dataset_loader_preview")
     if isinstance(preview_payload, dict):
@@ -2541,6 +2578,8 @@ with main_col:
         dataset_payload = build_dataset_payload_images(
             images_dir_path.resolve(), list(st.session_state.selected_images)
         )
+
+    st.session_state["last_dataset_payload"] = dataset_payload if dataset_payload else None
 
     if dataset_kind == "images":
         render_mask_analytics_panel(dataset_payload, backend_url, st.session_state.sample_size)

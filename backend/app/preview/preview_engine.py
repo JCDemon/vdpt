@@ -228,10 +228,14 @@ def preview_dataset(
     ops: Sequence[Dict[str, Any]],
     *,
     artifacts_dir: Path | str | None = None,
+    dataset: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Generate previews for tabular or image datasets with aggregated artifacts."""
 
     run_dir, provenance = start_provenance_run(artifacts_dir)
+    dataset_info: Dict[str, Any] = dict(dataset or {})
+    dataset_base_path = Path(dataset_info.get("path") or ".").resolve()
+    has_img_caption = any(op.get("kind") == "img_caption" for op in ops)
     processed_records: List[Dict[str, Any]] = []
     schema_new_columns: List[str] = []
     captions: List[str] = []
@@ -292,30 +296,61 @@ def preview_dataset(
                     schema_new_columns.append(column_name)
                     new_columns_seen.add(column_name)
             elif dataset_kind == "images" and kind == "img_caption":
-                caption_value = ""
-                try:
-                    op_result = run_operation(record, kind, params)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.exception(
-                        "image caption preview failed for record '%s'", record.get("id")
-                    )
-                    message = f"img_caption failed: {exc}"
+                raw_path = record.get("image_path") or original.get("image_path") or ""
+                resolved_path = Path(str(raw_path)) if raw_path else None
+                if resolved_path and not resolved_path.is_absolute():
+                    resolved_path = (dataset_base_path / resolved_path).resolve()
+                if resolved_path:
+                    record["image_path"] = str(resolved_path)
+
+                caption_value = "N/A"
+                op_result: Dict[str, Any] | None = None
+                if not resolved_path or not resolved_path.exists():
+                    missing_path = str(resolved_path) if resolved_path else str(raw_path)
+                    message = f"img_caption skipped; image not found: {missing_path}"
                     record_errors.append(message)
                     provenance.log(
-                        "ERROR",
-                        "img_caption failed",
+                        "WARN",
+                        message,
                         record_entry=record_entry,
-                        context={"error": str(exc)},
+                        context={"image_path": missing_path},
                     )
                 else:
-                    raw_caption = op_result.get("caption") if op_result else ""
-                    if raw_caption is not None:
-                        caption_value = str(raw_caption).strip()
-                    if op_result:
-                        provenance.record_operation(record_entry, kind, params, op_result)
+                    try:
+                        op_result = run_operation(record, kind, params)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.exception(
+                            "image caption preview failed for record '%s'", record.get("id")
+                        )
+                        message = f"img_caption failed: {exc}"
+                        record_errors.append(message)
+                        provenance.log(
+                            "WARN",
+                            "img_caption failed",
+                            record_entry=record_entry,
+                            context={"error": str(exc), "image_path": str(resolved_path)},
+                        )
+                    else:
+                        raw_caption = op_result.get("caption") if op_result else ""
+                        cleaned_caption = (
+                            str(raw_caption).strip() if raw_caption is not None else ""
+                        )
+                        if cleaned_caption:
+                            caption_value = cleaned_caption
+                        else:
+                            provenance.log(
+                                "WARN",
+                                "img_caption returned empty caption",
+                                record_entry=record_entry,
+                                context={"image_path": str(resolved_path)},
+                            )
+                        if op_result:
+                            provenance.record_operation(record_entry, kind, params, op_result)
+
                 record["caption"] = caption_value
-                if caption_value:
-                    captions.append(caption_value)
+                if len(captions) <= index:
+                    captions.extend(["N/A"] * (index + 1 - len(captions)))
+                captions[index] = caption_value
                 if "caption" not in base_columns and "caption" not in new_columns_seen:
                     schema_new_columns.append("caption")
                     new_columns_seen.add("caption")
@@ -755,12 +790,16 @@ def preview_dataset(
     for record_entry, record in zip(record_entries, processed_records):
         provenance.finish_record(record_entry, record)
 
-    if captions:
+    if has_img_caption:
+        preview_size = len(processed_records)
+        while len(captions) < preview_size:
+            captions.append("N/A")
+
         captions_path = run_dir / "captions.json"
         captions_path.write_text(json.dumps(captions, ensure_ascii=False, indent=2))
 
         metadata_payload = {
-            "count": len(captions),
+            "count": preview_size,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         metadata_path = run_dir / "metadata.json"

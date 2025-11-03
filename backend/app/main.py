@@ -189,7 +189,9 @@ def preview_api(plan: PreviewRequestPlan) -> Dict[str, Any]:
 
         sample_df = _sample_dataframe(df, sampling_dataset)
         records = sample_df.to_dict(orient="records")
-        preview_result = preview_dataset("csv", records, runtime_ops)
+        preview_result = preview_dataset(
+            "csv", records, runtime_ops, dataset=dataset.model_dump(mode="json")
+        )
 
         payload_records = preview_result.get("records", [])
         new_columns = preview_result.get("schema", {}).get("new_columns", [])
@@ -222,6 +224,7 @@ def preview_api(plan: PreviewRequestPlan) -> Dict[str, Any]:
             records,
             runtime_ops,
             artifacts_dir=artifacts_dir,
+            dataset=dataset.model_dump(mode="json"),
         )
 
         payload_records = preview_result.get("records", [])

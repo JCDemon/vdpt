@@ -30,16 +30,20 @@ def test_preview_dataset_text_and_images(tmp_path, monkeypatch):
 
     image_dir = tmp_path / "images"
     image_dir.mkdir()
-    image_paths = []
+    image_names = []
     for name in ("one.jpg", "two.jpg"):
         path = image_dir / name
         path.write_text("fake image contents")
-        image_paths.append(path)
+        image_names.append(name)
 
-    image_records = [{"image_path": str(path)} for path in image_paths]
+    image_records = [{"image_path": name} for name in image_names]
     image_ops = [{"kind": "img_caption", "params": {}}]
     image_preview = preview_dataset(
-        "images", image_records, image_ops, artifacts_dir=tmp_path / "artifacts"
+        "images",
+        image_records,
+        image_ops,
+        artifacts_dir=tmp_path / "artifacts",
+        dataset={"path": str(image_dir), "paths": image_names},
     )
 
     assert all(record["caption"].startswith("caption for ") for record in image_preview["records"])
@@ -47,10 +51,10 @@ def test_preview_dataset_text_and_images(tmp_path, monkeypatch):
     captions_path = Path(image_preview["artifacts"]["captions"])
     assert captions_path.exists()
     captions = json.loads(captions_path.read_text())
-    assert captions == [f"caption for {path.name}" for path in image_paths]
+    assert captions == [f"caption for {name}" for name in image_names]
 
     metadata_path = Path(image_preview["artifacts"]["metadata"])
     assert metadata_path.exists()
     metadata = json.loads(metadata_path.read_text())
-    assert metadata["count"] == len(image_paths)
+    assert metadata["count"] == len(image_names)
     assert "generated_at" in metadata
