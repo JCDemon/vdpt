@@ -197,14 +197,18 @@ class HuggingFaceImageLoader(DatasetLoader):
             image = _prepare_image(example, image_field)
             if image is None:
                 continue
-            identifier = sha1(f"{dataset_name}:{resolved_subset}:{split}:{idx}".encode()).hexdigest()
+            identifier = sha1(
+                f"{dataset_name}:{resolved_subset}:{split}:{idx}".encode()
+            ).hexdigest()
             image_path = cache_dir / f"{identifier}.png"
             try:
                 image.save(image_path)
             except Exception:
                 continue
 
-            metadata = {key: _serialize(value) for key, value in example.items() if key != image_field}
+            metadata = {
+                key: _serialize(value) for key, value in example.items() if key != image_field
+            }
             yield {
                 "image_path": str(image_path),
                 "dataset": dataset_name,

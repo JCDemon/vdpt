@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence, Type, TypeVar
+from typing import (
+    Any,
+    ClassVar,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Type,
+    TypeVar,
+)
 
 
 @dataclass(frozen=True)

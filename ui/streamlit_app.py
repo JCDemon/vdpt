@@ -718,11 +718,7 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
         "Preview dataset",
         key=f"dataset_loader_preview_button_{selected_id}",
     ):
-        sanitized_config = {
-            key: value
-            for key, value in config.items()
-            if value not in ("", None)
-        }
+        sanitized_config = {key: value for key, value in config.items() if value not in ("", None)}
         preview, error = _request_dataset_preview(
             backend_url,
             selected_id,
