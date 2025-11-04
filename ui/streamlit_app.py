@@ -33,7 +33,12 @@ from ui.sample_data import load_sample_plan as _load_sample_plan, ensure_sample_
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-from ui.utils.keys import _unique_widget_key as _base_widget_key, stable_key, unique_key
+from ui.utils.keys import (
+    _unique_widget_key as _base_widget_key,
+    stable_key,
+    stable_node_key,
+    unique_key,
+)
 from backend.app.run_index import list_runs
 from backend.app.types import RunSummary
 
@@ -230,8 +235,8 @@ def _render_tree_section(
         section_container.caption("No items available yet.")
         return
 
-    for node in nodes:
-        _render_tree_node(section_container, tree_state, section_id, node)
+    for idx, node in enumerate(nodes):
+        _render_tree_node(section_container, tree_state, section_id, node, idx)
 
 
 def _render_tree_node(
@@ -239,6 +244,7 @@ def _render_tree_node(
     tree_state: Dict[str, Any],
     section_id: str,
     node: Dict[str, Any],
+    idx: int,
 ) -> None:
     node_id = node["id"]
     full_node_id = f"{section_id}:{node_id}"
@@ -252,7 +258,7 @@ def _render_tree_node(
     if badge:
         button_label = f"{button_label} · {badge}"
 
-    button_key = stable_key("tree-node", section_id, node_id)
+    button_key = stable_node_key(section_id, node, idx)
     if container.button(button_label, key=button_key, use_container_width=True):
         _activate_tree_node(tree_state, section_id, node, trigger_rerun=True)
         return
@@ -500,12 +506,28 @@ def _plan_tree_nodes() -> List[Dict[str, Any]]:
 def _run_tree_nodes() -> List[Dict[str, Any]]:
     nodes: List[Dict[str, Any]] = []
     for summary in list_runs():
-        nodes.append(_run_summary_to_node(summary))
+        node = _run_summary_to_node(summary)
+        run_id = summary.run_id
+        node["id"] = run_id
+        if not node.get("label"):
+            human_label = (
+                summary.extra.get("label")
+                or summary.extra.get("name")
+                or summary.extra.get("title")
+                or run_id
+            )
+            node["label"] = human_label
+        nodes.append(node)
     return nodes
 
 
 def _run_summary_to_node(summary: RunSummary) -> Dict[str, Any]:
-    label = summary.run_id
+    label = (
+        summary.extra.get("label")
+        or summary.extra.get("name")
+        or summary.extra.get("title")
+        or summary.run_id
+    )
     badge = _format_badge(
         [
             summary.status,
