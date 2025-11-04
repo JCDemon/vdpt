@@ -25,7 +25,7 @@ def list_runs(artifacts_dir: Path | None = None) -> List[RunSummary]:
     runs: List[RunSummary] = []
     for run_dir in _iter_run_dirs(artifacts_dir):
         metadata = _read_metadata(run_dir / "metadata.json")
-        run_id = metadata.get("id") if metadata else run_dir.name
+        run_id = run_dir.name
         runs.append(RunSummary.from_metadata(run_id, metadata or {}))
     return runs
 
