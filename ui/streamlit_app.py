@@ -33,7 +33,7 @@ from ui.sample_data import load_sample_plan as _load_sample_plan, ensure_sample_
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-from ui.utils.keys import unique_key
+from ui.utils.keys import _unique_widget_key as _base_widget_key, stable_key, unique_key
 from backend.app.run_index import list_runs
 from backend.app.types import RunSummary
 
@@ -215,7 +215,7 @@ def _render_tree_section(
     label: str,
 ) -> None:
     is_expanded: bool = tree_state["expanded"].get(section_id, True)
-    toggle_key = _unique_widget_key("tree-section-toggle", section_id)
+    toggle_key = stable_key("tree-section-toggle", section_id)
     toggle_label = f"{'▼' if is_expanded else '▶'} {label}"
     if st.sidebar.button(toggle_label, key=toggle_key, use_container_width=True):
         tree_state["expanded"][section_id] = not is_expanded
@@ -252,7 +252,7 @@ def _render_tree_node(
     if badge:
         button_label = f"{button_label} · {badge}"
 
-    button_key = _unique_widget_key("tree-node", section_id, node_id)
+    button_key = stable_key("tree-node", section_id, node_id)
     if container.button(button_label, key=button_key, use_container_width=True):
         _activate_tree_node(tree_state, section_id, node, trigger_rerun=True)
         return
@@ -1321,15 +1321,19 @@ def render_artifact(label: str, rel_path: str, *, key_suffix: str | None = None)
 
 
 def _sanitize_streamlit_key(value: str) -> str:
-    return "".join(ch if ch.isalnum() else "-" for ch in value)
+    sanitized = "".join(ch if ch.isalnum() else "-" for ch in value)
+    return sanitized.strip("-") or "key"
 
 
-def _unique_widget_key(*parts: Any) -> str:
-    text_parts = [str(part) for part in parts if part not in (None, "")]
-    sanitized = "-".join(_sanitize_streamlit_key(part) for part in text_parts if part)
-    if not sanitized:
-        sanitized = "key"
-    return unique_key(sanitized)
+def _unique_widget_key(prefix: str, *parts: Any) -> str:
+    sanitized_prefix = _sanitize_streamlit_key(str(prefix))
+    sanitized_parts = [
+        _sanitize_streamlit_key(str(part)) for part in parts if part not in (None, "")
+    ]
+    sanitized_parts = [part for part in sanitized_parts if part]
+    if not sanitized_parts:
+        return unique_key(sanitized_prefix)
+    return _base_widget_key(sanitized_prefix, *sanitized_parts)
 
 
 @st.cache_data(show_spinner=False)
@@ -1919,13 +1923,13 @@ def _render_mask_downloads(mask_rows: pd.DataFrame, record_label: str, record_in
         for path in mask_paths:
             archive.write(path, arcname=path.name)
     buffer.seek(0)
-    unique_key = _unique_widget_key("mask-download", record_index, record_label)
+    download_key = _unique_widget_key("mask-download", record_index, record_label)
     st.download_button(
         label=f"Download masks ({record_label})",
         data=buffer.getvalue(),
         file_name=f"{record_label}_masks.zip",
         mime="application/zip",
-        key=unique_key,
+        key=download_key,
     )
 
 
