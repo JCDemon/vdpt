@@ -149,10 +149,14 @@ def _ensure_project_tree_state() -> None:
 _ensure_project_tree_state()
 
 
+if "simple_mode" not in st.session_state:
+    st.session_state.simple_mode = True
 if "plan_ops" not in st.session_state:
     st.session_state.plan_ops = []  # type: ignore[attr-defined]
 if "sample_size" not in st.session_state:
     st.session_state.sample_size = 5
+if "use_sample_csv" not in st.session_state:
+    st.session_state.use_sample_csv = True
 if "dataset_path" not in st.session_state:
     st.session_state.dataset_path = ""
 if "preview_result" not in st.session_state:
@@ -202,19 +206,23 @@ if "selected_run_id" not in st.session_state:
 ensure_sample_assets()
 
 
-def _render_project_tree_sidebar() -> None:
+def _render_project_tree_sidebar(
+    container: "st.delta_generator.DeltaGenerator" | None = None,
+) -> None:
     tree_state = st.session_state.project_tree
     section_nodes: Dict[str, List[Dict[str, Any]]] = {
         section_id: _gather_section_nodes(section_id) for section_id, _ in _TREE_SECTIONS
     }
-    with st.sidebar:
-        st.header("Project & Tasks")
-        _handle_tree_keyboard_navigation(tree_state, section_nodes)
-        for section_id, section_label in _TREE_SECTIONS:
-            _render_tree_section(tree_state, section_nodes[section_id], section_id, section_label)
+    target = container or st.sidebar
+    _handle_tree_keyboard_navigation(target, tree_state, section_nodes)
+    for section_id, section_label in _TREE_SECTIONS:
+        _render_tree_section(
+            target, tree_state, section_nodes[section_id], section_id, section_label
+        )
 
 
 def _render_tree_section(
+    container: "st.delta_generator.DeltaGenerator",
     tree_state: Dict[str, Any],
     nodes: List[Dict[str, Any]],
     section_id: str,
@@ -223,7 +231,7 @@ def _render_tree_section(
     is_expanded: bool = tree_state["expanded"].get(section_id, True)
     toggle_key = stable_key("tree-section-toggle", section_id)
     toggle_label = f"{'▼' if is_expanded else '▶'} {label}"
-    if st.sidebar.button(toggle_label, key=toggle_key, use_container_width=True):
+    if container.button(toggle_label, key=toggle_key, use_container_width=True):
         tree_state["expanded"][section_id] = not is_expanded
         st.rerun()
         return
@@ -231,7 +239,7 @@ def _render_tree_section(
     if not is_expanded:
         return
 
-    section_container = st.sidebar.container()
+    section_container = container.container()
     if not nodes:
         section_container.caption("No items available yet.")
         return
@@ -271,7 +279,9 @@ def _render_tree_node(
 
 
 def _handle_tree_keyboard_navigation(
-    tree_state: Dict[str, Any], section_nodes: Dict[str, List[Dict[str, Any]]]
+    container: "st.delta_generator.DeltaGenerator",
+    tree_state: Dict[str, Any],
+    section_nodes: Dict[str, List[Dict[str, Any]]],
 ) -> None:
     visible_nodes: List[Tuple[str, Dict[str, Any]]] = []
     for section_id, _ in _TREE_SECTIONS:
@@ -293,7 +303,7 @@ def _handle_tree_keyboard_navigation(
             return
         _process_tree_nav_key(tree_state, visible_nodes, key)
 
-    st.text_input(
+    container.text_input(
         "Tree keyboard navigation",
         key="tree_nav_value",
         label_visibility="collapsed",
@@ -569,11 +579,6 @@ def _artifact_tree_nodes() -> List[Dict[str, Any]]:
             }
         )
     return nodes
-
-
-_render_project_tree_sidebar()
-
-
 def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
     for candidate in paths:
         if candidate and candidate.exists():
@@ -648,12 +653,14 @@ def _request_dataset_preview(
         return None, f"Failed to decode preview response: {exc}"
 
 
-def _render_dataset_loader_sidebar(backend_url: str) -> None:
-    container = st.sidebar.container()
-    container.markdown("### Datasets")
+def _render_dataset_loader_sidebar(
+    backend_url: str, container: "st.delta_generator.DeltaGenerator" | None = None
+) -> None:
+    target = container or st.sidebar.container()
+    target.markdown("### Datasets")
 
     loader_state = st.session_state.dataset_loader_state
-    refresh_requested = container.button(
+    refresh_requested = target.button(
         "Refresh loaders",
         key="dataset_loader_refresh_button",
     )
@@ -669,10 +676,10 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
     loaders = loader_state.get("loaders") or []
     error_message = loader_state.get("error")
     if error_message:
-        container.warning(f"Unable to load dataset loaders: {error_message}")
+        target.warning(f"Unable to load dataset loaders: {error_message}")
 
     if not loaders:
-        container.info("No dataset loaders available from the backend.")
+        target.info("No dataset loaders available from the backend.")
         return
 
     loader_ids = [str(loader.get("id", "")) for loader in loaders]
@@ -686,7 +693,7 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
         selected_id = loader_ids[0]
     selected_index = loader_ids.index(selected_id)
 
-    chosen_label = container.selectbox(
+    chosen_label = target.selectbox(
         "Loader",
         options=loader_labels,
         index=selected_index,
@@ -703,7 +710,7 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
     loader_definition = loaders[selected_index]
     description = loader_definition.get("description")
     if description:
-        container.caption(description)
+        target.caption(description)
 
     config_store: Dict[str, Dict[str, Any]] = st.session_state.dataset_loader_configs
     config = dict(config_store.get(selected_id, {}))
@@ -722,7 +729,7 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
             str_choices = [str(choice) for choice in choices]
             if value not in str_choices:
                 value = str_choices[0] if str_choices else ""
-            selected_choice = container.selectbox(
+            selected_choice = target.selectbox(
                 label,
                 options=str_choices,
                 index=str_choices.index(value) if value in str_choices else 0,
@@ -731,7 +738,7 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
             )
             config[name] = selected_choice
         else:
-            text_value = container.text_input(
+            text_value = target.text_input(
                 label,
                 value=str(value) if value is not None else "",
                 key=widget_key,
@@ -741,16 +748,9 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
 
     config_store[selected_id] = config
 
-    limit_value = container.slider(
-        "Samples to preview",
-        min_value=1,
-        max_value=12,
-        value=int(st.session_state.dataset_loader_limit),
-        key=f"dataset_loader_limit_{selected_id}",
-    )
-    st.session_state.dataset_loader_limit = int(limit_value)
+    limit_value = int(st.session_state.get("dataset_loader_limit", 3))
 
-    refresh_preview = container.checkbox(
+    refresh_preview = target.checkbox(
         "Force refresh",
         value=False,
         key=f"dataset_loader_refresh_preview_{selected_id}",
@@ -767,9 +767,9 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
         container.caption(f"Last preview: {existing_preview['summary']}")
 
     if st.session_state.dataset_loader_preview_error:
-        container.error(st.session_state.dataset_loader_preview_error)
+        target.error(st.session_state.dataset_loader_preview_error)
 
-    if container.button(
+    if target.button(
         "Preview dataset",
         key=f"dataset_loader_preview_button_{selected_id}",
     ):
@@ -784,12 +784,12 @@ def _render_dataset_loader_sidebar(backend_url: str) -> None:
         if error:
             st.session_state.dataset_loader_preview = None
             st.session_state.dataset_loader_preview_error = error
-            container.error(f"Preview failed: {error}")
+            target.error(f"Preview failed: {error}")
         else:
             st.session_state.dataset_loader_preview = preview
             st.session_state.dataset_loader_preview_error = None
             if preview and preview.get("summary"):
-                container.success(preview["summary"])
+                target.success(preview["summary"])
 
 
 def _preview_caption_from_record(record: Dict[str, Any]) -> str:
@@ -2062,7 +2062,10 @@ def render_mask_analytics_result(result: Dict[str, Any]) -> None:
 
 
 def render_mask_analytics_panel(
-    dataset_payload: Optional[Dict[str, Any]], backend_url: str, sample_size: int
+    dataset_payload: Optional[Dict[str, Any]],
+    backend_url: str,
+    sample_size: int,
+    run_requested: bool = False,
 ) -> None:
     st.markdown("### Mask analytics")
     if not dataset_payload:
@@ -2070,41 +2073,16 @@ def render_mask_analytics_panel(
         st.info("Upload images to enable mask analytics.")
         return
 
-    segmentation_options = {
-        "Segment Anything (SAM)": "sam",
-        "CLIPSeg (prompt)": "clipseg",
-    }
-    current_mode = st.session_state.get("mask_segmentation_mode", "sam")
-    option_labels = list(segmentation_options.keys())
-    default_index = 0 if current_mode != "clipseg" else 1
-    selected_option = st.radio(
-        "Segmentation method",
-        options=option_labels,
-        index=default_index,
-        key="mask_segmentation_choice",
-    )
-    segmentation_mode = segmentation_options[selected_option]
-    st.session_state.mask_segmentation_mode = segmentation_mode
+    segmentation_mode = st.session_state.get("mask_segmentation_mode", "sam")
+    prompt_value = st.session_state.get("mask_prompt", "")
 
-    prompt_disabled = segmentation_mode != "clipseg"
-    prompt_value = st.text_input(
-        "Text prompt",
-        value=st.session_state.get("mask_prompt", ""),
-        disabled=prompt_disabled,
-        help="Provide a text description for CLIPSeg-guided segmentation.",
-    )
-    if not prompt_disabled:
-        st.session_state.mask_prompt = prompt_value
+    mode_label = "Segment Anything (SAM)" if segmentation_mode == "sam" else "CLIPSeg (prompt)"
+    prompt_note = ""
+    if segmentation_mode == "clipseg" and prompt_value.strip():
+        prompt_note = f" · prompt: {prompt_value.strip()}"
+    st.caption(f"Segmentation: {mode_label}{prompt_note}")
 
-    control_cols = st.columns([1, 1])
-    run_clicked = control_cols[0].button("Run mask analytics", use_container_width=True)
-    clear_clicked = control_cols[1].button(
-        "Clear results", use_container_width=True, type="secondary"
-    )
-    if clear_clicked:
-        st.session_state.mask_analytics_result = None
-
-    if run_clicked:
+    if run_requested:
         if segmentation_mode == "clipseg" and not prompt_value.strip():
             st.warning("Enter a prompt before running CLIPSeg segmentation.")
         else:
@@ -2393,169 +2371,286 @@ def update_provenance_charts(counts: Dict[str, int]) -> None:
     st.session_state.provenance_recency_items = recency_items
 
 
-st.sidebar.header("Configuration")
-backend_url = st.sidebar.text_input("Backend URL", DEFAULT_BACKEND_URL)
+backend_url = DEFAULT_BACKEND_URL
+run_masks_clicked = False
+clear_masks_clicked = False
 
-_render_dataset_loader_sidebar(backend_url)
+with st.sidebar:
+    st.header("Project & Tasks")
+    with st.expander("Project tree (beta)", expanded=False):
+        tree_container = st.container()
+        _render_project_tree_sidebar(tree_container)
 
-mode_labels = {"csv": "CSV", "images": "Images"}
-mode_index = ["csv", "images"].index(st.session_state.dataset_kind)
-selected_label = st.sidebar.radio(
-    "Dataset type",
-    options=[mode_labels[mode] for mode in ["csv", "images"]],
-    index=mode_index,
-)
-selected_kind = "images" if selected_label == mode_labels["images"] else "csv"
-if selected_kind != st.session_state.dataset_kind:
-    st.session_state.dataset_kind = selected_kind
-    st.session_state.plan_ops = []  # type: ignore[assignment]
-    st.session_state.preview_result = None
-    st.session_state.execute_result = None
-    st.session_state.mask_analytics_result = None
+    st.divider()
+    st.subheader("Dataset")
 
-dataset_kind = st.session_state.dataset_kind
+    simple_mode = st.toggle(
+        "Simple mode",
+        value=st.session_state.simple_mode,
+        help="Hide advanced controls; great for first-time users.",
+    )
+    st.session_state.simple_mode = simple_mode
 
-current_dataset_path = ""
-columns: List[str] = []
-image_paths: List[Path] = []
+    dtype_options = ["CSV", "Images"]
+    dtype_default_index = 1 if st.session_state.dataset_kind == "images" else 0
+    dtype = st.radio(
+        "Dataset type",
+        dtype_options,
+        horizontal=False,
+        index=dtype_default_index,
+        key="dtype",
+        help="Choose CSV for text ops, Images for vision ops.",
+    )
 
-if dataset_kind == "csv":
-    sample_csv_path = _find_first_existing(SAMPLE_CSV_CANDIDATES)
-    uploaded_file = st.sidebar.file_uploader("Upload CSV dataset", type=["csv"])
-    uploaded_path = _persist_uploaded_file(uploaded_file)
+    selected_kind = "images" if dtype == "Images" else "csv"
+    if selected_kind != st.session_state.dataset_kind:
+        st.session_state.dataset_kind = selected_kind
+        st.session_state.plan_ops = []  # type: ignore[assignment]
+        st.session_state.preview_result = None
+        st.session_state.execute_result = None
+        st.session_state.mask_analytics_result = None
 
-    use_sample = False
-    if sample_csv_path and st.sidebar.checkbox(
-        "Use bundled sample CSV", value=not bool(uploaded_path)
-    ):
-        use_sample = True
-        st.sidebar.caption(f"Using sample at {sample_csv_path}")
+    dataset_kind = st.session_state.dataset_kind
 
-    try:
-        raw_sample_plan = _load_sample_plan()
-    except Exception as exc:
-        st.sidebar.warning(f"Failed to load sample plan: {exc}")
-        raw_sample_plan = None
+    current_dataset_path = ""
+    columns: List[str] = []
+    image_paths: List[Path] = []
 
-    sample_plan_data = _normalize_sample_plan(raw_sample_plan)
-    if st.sidebar.button("Load sample plan", disabled=sample_plan_data is None):
-        if sample_plan_data:
-            st.session_state.plan_ops = sample_plan_data.get("ops", [])  # type: ignore[assignment]
-            dataset = sample_plan_data.get("dataset") or {}
-            sample_size = sample_plan_data.get("limit", dataset.get("sample_size"))
-            if sample_size is not None:
-                try:
-                    st.session_state.sample_size = int(sample_size)
-                except (TypeError, ValueError):
-                    pass
-            dataset_path = dataset.get("path")
-            if not dataset_path:
-                candidate_path = Path("artifacts") / "uploads" / "sample_news.csv"
-                if candidate_path.exists():
-                    dataset_path = candidate_path
-            if dataset_path:
-                st.session_state.dataset_path = str(dataset_path)
-            st.sidebar.success("Sample plan loaded")
+    if dataset_kind == "csv":
+        sample_csv_path = _find_first_existing(SAMPLE_CSV_CANDIDATES)
+
+        uploaded_file = None
+        if simple_mode:
+            with st.expander("Upload custom CSV", expanded=False):
+                uploaded_file = st.file_uploader(
+                    "Upload CSV dataset",
+                    type=["csv"],
+                    key="csv_uploader",
+                )
         else:
-            st.sidebar.info("No sample plan found")
+            uploaded_file = st.file_uploader(
+                "Upload CSV dataset",
+                type=["csv"],
+                key="csv_uploader",
+            )
 
-    if uploaded_path:
-        current_dataset_path = str(uploaded_path)
-    elif use_sample and sample_csv_path:
-        current_dataset_path = str(sample_csv_path)
-    elif st.session_state.dataset_path:
-        current_dataset_path = st.session_state.dataset_path
+        uploaded_path = _persist_uploaded_file(uploaded_file)
 
-    st.session_state.dataset_path = current_dataset_path
-    if current_dataset_path:
-        columns = _read_columns(current_dataset_path)
-else:
-    st.session_state.dataset_path = ""
-    uploaded_images = st.sidebar.file_uploader(
-        "Upload images",
-        type=["png", "jpg", "jpeg"],
-        accept_multiple_files=True,
-    )
-    saved_images = _persist_uploaded_images(uploaded_images)
-    if saved_images:
-        images_dir = Path(st.session_state.images_dir)
-        for path in saved_images:
-            try:
-                rel_path = path.relative_to(images_dir)
-            except ValueError:
-                rel_path = Path(path.name)
-            rel_str = rel_path.as_posix()
-            if rel_str not in st.session_state.selected_images:
-                st.session_state.selected_images.append(rel_str)
+        default_use_sample = st.session_state.get("use_sample_csv", True)
+        sample_checkbox_disabled = sample_csv_path is None
+        if sample_checkbox_disabled:
+            default_use_sample = False
+        if uploaded_path and default_use_sample:
+            default_use_sample = False
+            st.session_state.use_sample_csv = False
+        use_sample_csv = st.checkbox(
+            "Use bundled sample CSV",
+            value=default_use_sample,
+            help="Loads data/sample_news.csv for a quick try.",
+            disabled=sample_checkbox_disabled,
+        )
+        st.session_state.use_sample_csv = use_sample_csv
 
-    bundled_images = _list_bundled_images()
-    bundled_available = bool(bundled_images)
-    if st.session_state.use_bundled_images and not bundled_available:
-        _disable_bundled_images()
-        bundled_available = False
+        if sample_csv_path and use_sample_csv:
+            st.caption(f"Using sample at {sample_csv_path}")
+        elif sample_checkbox_disabled:
+            st.caption("No bundled sample CSV found.")
 
-    checkbox_value = st.sidebar.checkbox(
-        "Use bundled sample images",
-        value=st.session_state.use_bundled_images if bundled_available else False,
-        disabled=not bundled_available,
-    )
+        try:
+            raw_sample_plan = _load_sample_plan()
+        except Exception as exc:
+            st.warning(f"Failed to load sample plan: {exc}")
+            raw_sample_plan = None
 
-    if checkbox_value != st.session_state.use_bundled_images:
-        if checkbox_value:
-            if _enable_bundled_images(remember_previous=not st.session_state.use_bundled_images):
-                st.sidebar.success("Bundled sample images loaded.")
+        sample_plan_data = _normalize_sample_plan(raw_sample_plan)
+        if st.button("Load sample plan", disabled=sample_plan_data is None):
+            if sample_plan_data:
+                st.session_state.plan_ops = sample_plan_data.get("ops", [])  # type: ignore[assignment]
+                dataset = sample_plan_data.get("dataset") or {}
+                sample_size = sample_plan_data.get("limit", dataset.get("sample_size"))
+                if sample_size is not None:
+                    try:
+                        st.session_state.sample_size = int(sample_size)
+                    except (TypeError, ValueError):
+                        pass
+                dataset_path = dataset.get("path")
+                if not dataset_path:
+                    candidate_path = Path("artifacts") / "uploads" / "sample_news.csv"
+                    if candidate_path.exists():
+                        dataset_path = candidate_path
+                if dataset_path:
+                    st.session_state.dataset_path = str(dataset_path)
+                st.success("Sample plan loaded")
             else:
-                st.sidebar.warning("Bundled sample images are unavailable.")
-                st.session_state.use_bundled_images = False
+                st.info("No sample plan found")
+
+        if uploaded_path:
+            current_dataset_path = str(uploaded_path)
+        elif use_sample_csv and sample_csv_path:
+            current_dataset_path = str(sample_csv_path)
+        elif st.session_state.dataset_path:
+            current_dataset_path = st.session_state.dataset_path
+
+        st.session_state.dataset_path = current_dataset_path
+        if current_dataset_path:
+            columns = _read_columns(current_dataset_path)
+    else:
+        st.session_state.dataset_path = ""
+
+        uploaded_images = None
+        if simple_mode:
+            with st.expander("Upload images", expanded=False):
+                uploaded_images = st.file_uploader(
+                    "Upload images",
+                    type=["png", "jpg", "jpeg"],
+                    accept_multiple_files=True,
+                    key="image_uploader",
+                )
         else:
+            uploaded_images = st.file_uploader(
+                "Upload images",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+                key="image_uploader",
+            )
+
+        saved_images = _persist_uploaded_images(uploaded_images)
+        if saved_images:
+            images_dir = Path(st.session_state.images_dir)
+            for path in saved_images:
+                try:
+                    rel_path = path.relative_to(images_dir)
+                except ValueError:
+                    rel_path = Path(path.name)
+                rel_str = rel_path.as_posix()
+                if rel_str not in st.session_state.selected_images:
+                    st.session_state.selected_images.append(rel_str)
+
+        bundled_images = _list_bundled_images()
+        bundled_available = bool(bundled_images)
+        if st.session_state.use_bundled_images and not bundled_available:
             _disable_bundled_images()
+            bundled_available = False
 
-    if bundled_available:
-        st.sidebar.caption(f"{len(bundled_images)} bundled image(s) in {BUNDLED_IMAGE_DIR}")
-    else:
-        st.sidebar.caption(f"No bundled images found in {BUNDLED_IMAGE_DIR}")
-
-    if st.sidebar.button("Load sample plan (images)", disabled=not bundled_available):
-        activated = _enable_bundled_images(
-            remember_previous=not st.session_state.use_bundled_images
+        use_sample_imgs = st.checkbox(
+            "Use bundled sample images",
+            value=st.session_state.use_bundled_images if bundled_available else False,
+            help="Loads artifacts/bundled_images.",
+            disabled=not bundled_available,
         )
-        if not activated:
-            st.sidebar.warning("Bundled sample images are unavailable.")
+
+        if use_sample_imgs != st.session_state.use_bundled_images:
+            if use_sample_imgs:
+                if _enable_bundled_images(remember_previous=not st.session_state.use_bundled_images):
+                    st.success("Bundled sample images loaded.")
+                else:
+                    st.warning("Bundled sample images are unavailable.")
+                    st.session_state.use_bundled_images = False
+            else:
+                _disable_bundled_images()
+
+        if bundled_available and use_sample_imgs:
+            st.caption(f"{len(bundled_images)} bundled image(s) found.")
+        elif bundled_available:
+            st.caption(f"{len(bundled_images)} bundled image(s) in {BUNDLED_IMAGE_DIR}")
         else:
-            plan_copy = deepcopy(IMAGE_SAMPLE_PLAN)
-            st.session_state.plan_ops = plan_copy.get("ops", [])  # type: ignore[assignment]
-            st.session_state.images_dir = str(BUNDLED_IMAGE_DIR.resolve())
-            st.session_state.selected_images = [path.name for path in bundled_images]
-            st.session_state.sample_size = min(len(bundled_images), 3) or 1
-            st.session_state.preview_result = None
-            st.session_state.execute_result = None
-            st.session_state.use_bundled_images = True
-            st.sidebar.success("Sample image plan loaded.")
+            st.caption(f"No bundled images found in {BUNDLED_IMAGE_DIR}")
 
-    image_paths = _resolve_selected_image_paths()
-    images_dir_display = st.session_state.images_dir
-    if images_dir_display:
-        st.sidebar.caption(
-            f"Images stored in {images_dir_display} ({len(image_paths)} file(s) saved)"
+        if st.button("Load sample plan (images)", disabled=not bundled_available):
+            activated = _enable_bundled_images(remember_previous=not st.session_state.use_bundled_images)
+            if not activated:
+                st.warning("Bundled sample images are unavailable.")
+            else:
+                plan_copy = deepcopy(IMAGE_SAMPLE_PLAN)
+                st.session_state.plan_ops = plan_copy.get("ops", [])  # type: ignore[assignment]
+                st.session_state.images_dir = str(BUNDLED_IMAGE_DIR.resolve())
+                st.session_state.selected_images = [path.name for path in bundled_images]
+                st.session_state.sample_size = min(len(bundled_images), 3) or 1
+                st.session_state.preview_result = None
+                st.session_state.execute_result = None
+                st.session_state.use_bundled_images = True
+                st.success("Sample image plan loaded.")
+
+        image_paths = _resolve_selected_image_paths()
+        images_dir_display = st.session_state.images_dir
+        if images_dir_display:
+            st.caption(
+                f"Images stored in {images_dir_display} ({len(image_paths)} file(s) saved)"
+            )
+
+        if image_paths:
+            st.markdown("#### Saved images")
+            base_dir = Path(st.session_state.images_dir)
+            for rel_path in list(st.session_state.selected_images):
+                path = base_dir / rel_path
+                if not path.exists():
+                    continue
+                cols = st.columns([4, 1])
+                cols[0].write(f"{path.name} ({_format_size(path.stat().st_size)})")
+                remove_key = _unique_widget_key("remove-image", rel_path)
+                if cols[1].button("Remove", key=remove_key):
+                    st.session_state.selected_images = [
+                        item for item in st.session_state.selected_images if item != rel_path
+                    ]
+                    st.rerun()  # refresh UI with stable API
+        else:
+            st.info("Upload PNG, JPG, or PPM files to begin.")
+
+    samples = st.slider(
+        "Samples to preview",
+        1,
+        12,
+        int(st.session_state.get("dataset_loader_limit", 3)),
+        help="How many items to preview.",
+    )
+    st.session_state.dataset_loader_limit = int(samples)
+
+    with st.expander("Advanced configuration", expanded=not simple_mode):
+        backend_url = st.text_input(
+            "Backend URL",
+            value=backend_url,
+            help="FastAPI server address.",
         )
+        st.subheader("Datasets")
+        loader_container = st.container()
+        _render_dataset_loader_sidebar(backend_url, container=loader_container)
 
-    if image_paths:
-        st.sidebar.markdown("#### Saved images")
-        base_dir = Path(st.session_state.images_dir)
-        for rel_path in list(st.session_state.selected_images):
-            path = base_dir / rel_path
-            if not path.exists():
-                continue
-            cols = st.sidebar.columns([4, 1])
-            cols[0].write(f"{path.name} ({_format_size(path.stat().st_size)})")
-            remove_key = _unique_widget_key("remove-image", rel_path)
-            if cols[1].button("Remove", key=remove_key):
-                st.session_state.selected_images = [
-                    item for item in st.session_state.selected_images if item != rel_path
-                ]
-                st.rerun()  # refresh UI with stable API
-    else:
-        st.sidebar.info("Upload PNG, JPG, or PPM files to begin.")
+    if st.button("Preview dataset", key=stable_key("preview-dataset", dtype)):
+        st.session_state.sidebar_preview_trigger = True
+
+    st.divider()
+    st.subheader("Mask analytics")
+
+    seg_choice = st.radio(
+        "Segmentation method",
+        ["Segment Anything (SAM)", "CLIPSeg (prompt)"],
+        key="seg_method",
+        help="Choose SAM for general masks; CLIPSeg for text-prompt masks.",
+    )
+    seg_mode = "clipseg" if seg_choice == "CLIPSeg (prompt)" else "sam"
+    st.session_state.mask_segmentation_mode = seg_mode
+
+    prompt_disabled = seg_mode != "clipseg"
+    prompt_value = st.text_input(
+        "Text prompt",
+        st.session_state.get("mask_prompt", ""),
+        help="Used only for CLIPSeg.",
+        disabled=prompt_disabled,
+    )
+    if not prompt_disabled:
+        st.session_state.mask_prompt = prompt_value
+
+    run_masks_clicked = st.button(
+        "Run mask analytics",
+        key=stable_key("run-masks", dtype),
+    )
+    clear_masks_clicked = st.button(
+        "Clear results",
+        key=stable_key("clear-masks", dtype),
+    )
+
+    if clear_masks_clicked:
+        st.session_state.mask_analytics_result = None
 
 dataset_payload: Optional[Dict[str, Any]] = None
 
@@ -2637,7 +2732,12 @@ with main_col:
     st.session_state["last_dataset_payload"] = dataset_payload if dataset_payload else None
 
     if dataset_kind == "images":
-        render_mask_analytics_panel(dataset_payload, backend_url, st.session_state.sample_size)
+        render_mask_analytics_panel(
+            dataset_payload,
+            backend_url,
+            st.session_state.sample_size,
+            run_requested=run_masks_clicked,
+        )
 
     st.markdown("### Operations")
     available_kinds = (
@@ -2827,6 +2927,9 @@ with main_col:
     preview_clicked = action_cols[0].button(
         "Preview", use_container_width=True, disabled=preview_disabled
     )
+    sidebar_preview_trigger = st.session_state.pop("sidebar_preview_trigger", False)
+    if sidebar_preview_trigger:
+        preview_clicked = True
     execute_clicked = action_cols[1].button(
         "Execute", use_container_width=True, disabled=execute_disabled
     )
