@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import random
 from datetime import UTC, datetime
@@ -29,6 +30,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
     from .preview.preview_engine import _ProvenanceRun
 
 __version__ = "0.1.0"
+
+PROVIDER_NAME = os.getenv("VDPT_PROVIDER", "openai").lower()
 
 
 todo_service = TodoService()
@@ -158,8 +161,24 @@ Plan.Dataset = CsvDataset  # type: ignore[attr-defined]
 Plan.ImageDataset = ImageDataset  # type: ignore[attr-defined]
 
 
+async def _log_provider_startup() -> None:
+    logging.getLogger("uvicorn").info(
+        "VDPT provider = %s; DASHSCOPE_API_KEY set = %s",
+        PROVIDER_NAME,
+        bool(os.getenv("DASHSCOPE_API_KEY")),
+    )
+
+
 def health() -> Dict[str, bool]:
     return {"ok": True}
+
+
+def healthz() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "provider": PROVIDER_NAME,
+        "has_dashscope_key": bool(os.getenv("DASHSCOPE_API_KEY")),
+    }
 
 
 def provenance_snapshot() -> Dict[str, Any]:
@@ -167,7 +186,7 @@ def provenance_snapshot() -> Dict[str, Any]:
 
 
 def config() -> Dict[str, Any]:
-    provider_name = providers.current.__name__.split(".")[-1]
+    provider_name = providers.PROVIDER_NAME
     return {"provider": provider_name, "mock": bool(os.getenv("VDPT_MOCK"))}
 
 
@@ -693,8 +712,8 @@ def _image_dataset_input_dir(dataset: ImageDataset) -> Optional[str]:
 
 
 def _image_provider_details() -> tuple[str, str]:
-    provider_name = (os.getenv("VDPT_PROVIDER") or "mock").strip().lower()
-    provider_module = providers.current
+    provider_name = providers.PROVIDER_NAME or "dummy"
+    provider_module = providers.provider
     model_value = getattr(provider_module, "VISION_MODEL", None) or getattr(
         provider_module, "TEXT_MODEL", provider_name
     )
@@ -915,7 +934,9 @@ def complete_todo(todo_id: int, service: TodoService = Depends(get_service)) -> 
 def create_app() -> FastAPI:
     app = FastAPI(title="VDPT API", version=__version__)
 
+    app.on_event("startup")(_log_provider_startup)
     app.get("/health", tags=["health"])(health)
+    app.get("/healthz", tags=["health"])(healthz)
     app.get("/config", tags=["config"])(config)
     app.get("/provenance/snapshot", tags=["provenance"])(provenance_snapshot)
     app.get("/datasets/list", tags=["datasets"])(list_dataset_loaders)

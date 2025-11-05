@@ -29,6 +29,28 @@ from ..ops.text import summarize as _text_summarize  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _log_provider_usage(
+    provenance: "_ProvenanceRun",
+    record_entry: dict[str, Any],
+    op_name: str,
+    *,
+    path: str | None = None,
+) -> None:
+    message = f"provider={providers.PROVIDER_NAME} op={op_name}"
+    context: dict[str, Any] = {"provider": providers.PROVIDER_NAME, "operation": op_name}
+    if path:
+        message = f"{message} path={path}"
+        context["path"] = path
+
+    provenance.log("INFO", message, record_entry=record_entry, context=context)
+
+    record_logs = record_entry.get("logs")
+    if record_logs:
+        record_logs[-1]["msg"] = message
+    if provenance.logs:
+        provenance.logs[-1]["msg"] = message
+
+
 class _ProvenanceRun:
     """Capture provenance details, logs, and per-record data for a run."""
 
@@ -272,6 +294,7 @@ def preview_dataset(
                 source_value = original.get(source_field)
 
                 if isinstance(source_value, str):
+                    _log_provider_usage(provenance, record_entry, "summarize")
                     try:
                         op_result = run_operation(record, kind, params)
                     except Exception as exc:  # pragma: no cover - defensive
@@ -316,6 +339,12 @@ def preview_dataset(
                         context={"image_path": missing_path},
                     )
                 else:
+                    _log_provider_usage(
+                        provenance,
+                        record_entry,
+                        "img_caption",
+                        path=resolved_path.name if resolved_path else None,
+                    )
                     try:
                         op_result = run_operation(record, kind, params)
                     except Exception as exc:  # pragma: no cover - defensive
@@ -1023,9 +1052,12 @@ def preview_summarize(
 
     instructions = params.get("instructions") or "Summarize the following text."
     max_tokens = int(params.get("max_tokens", 128))
-    prompt = f"{instructions.strip()}\n\n" "Text:\n" f"{text.strip()}\n" "Summary:"
     try:
-        response = providers.current.chat(prompt, max_tokens=max_tokens)
+        response = providers.summarize(
+            text,
+            instructions=str(instructions),
+            max_tokens=max_tokens,
+        )
     except Exception as exc:  # pragma: no cover - provider errors
         raise RuntimeError(f"Failed to summarize text: {exc}") from exc
     return response.strip() if isinstance(response, str) else ""

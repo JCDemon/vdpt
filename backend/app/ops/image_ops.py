@@ -124,10 +124,12 @@ class ImageCaptionHandler(OperationHandler):
         else:
             max_tokens = 80
 
-        kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
-        if prompt is not None:
-            kwargs["prompt"] = prompt
-        caption = providers.current.caption(value, **kwargs)
+        instructions = str(prompt) if prompt is not None else ""
+        caption = providers.img_caption(
+            value,
+            instructions=instructions,
+            max_tokens=max_tokens,
+        )
         return {"caption": caption or ""}
 
 

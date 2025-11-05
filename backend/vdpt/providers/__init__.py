@@ -1,19 +1,22 @@
-import importlib
+"""Provider selection and narrow API surface for VDPT."""
+
+from __future__ import annotations
+
 import os
-from typing import Literal, cast
 
+PROVIDER_NAME = os.getenv("VDPT_PROVIDER", "openai").lower()
 
-def detect_provider() -> Literal["qwen", "mock"]:
-    env_provider = os.getenv("VDPT_PROVIDER")
-    if env_provider:
-        return cast(Literal["qwen", "mock"], env_provider)
+if PROVIDER_NAME == "qwen":
+    from . import qwen as provider  # noqa: F401
+elif PROVIDER_NAME == "openai":
+    from . import openai as provider  # noqa: F401
+else:
+    from . import dummy as provider  # noqa: F401
 
-    if os.getenv("DASHSCOPE_API_KEY"):
-        return "qwen"
+summarize = provider.summarize  # type: ignore[attr-defined]
+img_caption = provider.img_caption  # type: ignore[attr-defined]
 
-    return "mock"
+# Backwards compatibility for modules that still expect the provider module.
+current = provider
 
-
-current = importlib.import_module(f".{detect_provider()}", package=__name__)
-
-__all__ = ["current", "detect_provider"]
+__all__ = ["PROVIDER_NAME", "provider", "summarize", "img_caption", "current"]
