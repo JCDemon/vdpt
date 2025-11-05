@@ -579,6 +579,8 @@ def _artifact_tree_nodes() -> List[Dict[str, Any]]:
             }
         )
     return nodes
+
+
 def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
     for candidate in paths:
         if candidate and candidate.exists():
@@ -2541,7 +2543,9 @@ with st.sidebar:
 
         if use_sample_imgs != st.session_state.use_bundled_images:
             if use_sample_imgs:
-                if _enable_bundled_images(remember_previous=not st.session_state.use_bundled_images):
+                if _enable_bundled_images(
+                    remember_previous=not st.session_state.use_bundled_images
+                ):
                     st.success("Bundled sample images loaded.")
                 else:
                     st.warning("Bundled sample images are unavailable.")
@@ -2557,7 +2561,9 @@ with st.sidebar:
             st.caption(f"No bundled images found in {BUNDLED_IMAGE_DIR}")
 
         if st.button("Load sample plan (images)", disabled=not bundled_available):
-            activated = _enable_bundled_images(remember_previous=not st.session_state.use_bundled_images)
+            activated = _enable_bundled_images(
+                remember_previous=not st.session_state.use_bundled_images
+            )
             if not activated:
                 st.warning("Bundled sample images are unavailable.")
             else:
@@ -2574,9 +2580,7 @@ with st.sidebar:
         image_paths = _resolve_selected_image_paths()
         images_dir_display = st.session_state.images_dir
         if images_dir_display:
-            st.caption(
-                f"Images stored in {images_dir_display} ({len(image_paths)} file(s) saved)"
-            )
+            st.caption(f"Images stored in {images_dir_display} ({len(image_paths)} file(s) saved)")
 
         if image_paths:
             st.markdown("#### Saved images")
