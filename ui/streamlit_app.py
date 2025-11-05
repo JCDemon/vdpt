@@ -30,6 +30,7 @@ import streamlit as st
 from PIL import Image
 
 from ui.sample_data import load_sample_plan as _load_sample_plan, ensure_sample_assets
+from ui.assets import list_bundled_images
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -399,7 +400,11 @@ def _dataset_tree_nodes() -> List[Dict[str, Any]]:
             }
         )
     if st.session_state.get("use_bundled_images"):
-        bundled_images = _list_bundled_images()
+        try:
+            bundled_images = list_bundled_images()
+        except Exception as e:  # pragma: no cover - defensive UI guard
+            bundled_images = []
+            st.sidebar.info(f"Sample images not found ({e}); you can upload your own.")
         image_badge = _format_badge(
             [
                 "IMAGES",
@@ -924,16 +929,12 @@ def _render_dataset_preview(preview: Optional[Dict[str, Any]]) -> None:
 
 def _list_bundled_images() -> List[Path]:
     _ensure_bundled_images_present()
-    if not BUNDLED_IMAGE_DIR.exists():
+    try:
+        filenames = list_bundled_images()
+    except Exception:
         return []
 
-    supported_suffixes = {".png", ".jpg", ".jpeg", ".ppm"}
-    candidates = [
-        path
-        for path in BUNDLED_IMAGE_DIR.iterdir()
-        if path.is_file() and path.suffix.lower() in supported_suffixes
-    ]
-    return sorted(candidates, key=lambda item: item.name.lower())
+    return [BUNDLED_IMAGE_DIR / name for name in filenames]
 
 
 def _enable_bundled_images(*, remember_previous: bool = True) -> bool:
