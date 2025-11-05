@@ -26,4 +26,5 @@ dependencies = [
     "transformers",
     "torch",
     "datasets",
+    "dashscope>=1.24.6",
 ]

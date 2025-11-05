@@ -1,12 +1,11 @@
+import importlib
 import json
 from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
 from PIL import Image
-
-from backend.app.main import Plan, Operation, execute, preview
-from backend.vdpt.providers import mock as mock_provider
+import pytest
 
 
 def _create_test_images(session_dir: Path) -> list[Path]:
@@ -23,11 +22,27 @@ def _create_test_images(session_dir: Path) -> list[Path]:
     return paths
 
 
-def _expected_caption(path: Path) -> str:
-    return mock_provider.caption(str(path), prompt="Describe")
+def test_preview_and_execute_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VDPT_PROVIDER", "mock")
 
+    from backend.vdpt import providers
 
-def test_preview_and_execute_images(tmp_path):
+    importlib.reload(providers)
+
+    from backend.vdpt.providers import mock as mock_provider
+
+    app_main = importlib.import_module("backend.app.main")
+
+    importlib.reload(app_main)
+
+    Plan = app_main.Plan
+    Operation = app_main.Operation
+    preview = app_main.preview
+    execute = app_main.execute
+
+    def _expected_caption(path: Path) -> str:
+        return mock_provider.caption(str(path), prompt="Describe")
+
     session_id = f"test-session-{tmp_path.name}-{uuid4().hex}"
     uploads_dir = Path("artifacts") / "uploads" / session_id
     image_paths = _create_test_images(uploads_dir)

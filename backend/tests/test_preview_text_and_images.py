@@ -10,16 +10,13 @@ from backend.app.preview.preview_engine import preview_dataset  # noqa: E402
 from backend.vdpt import providers  # noqa: E402
 
 
-class _DummyProvider:
-    def chat(self, prompt, *, max_tokens=128, **_: object) -> str:
-        return "stub summary"
-
-    def caption(self, image_path: str, **_: object) -> str:
-        return f"caption for {Path(image_path).name}"
-
-
 def test_preview_dataset_text_and_images(tmp_path, monkeypatch):
-    monkeypatch.setattr(providers, "current", _DummyProvider())
+    monkeypatch.setattr(providers, "summarize", lambda *_, **__: "stub summary")
+    monkeypatch.setattr(
+        providers,
+        "img_caption",
+        lambda image_path, **__: f"caption for {Path(image_path).name}",
+    )
 
     csv_records = [{"text": "hello world"}]
     csv_ops = [{"kind": "summarize", "params": {"field": "text"}}]

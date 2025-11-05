@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from backend.vdpt import providers
 from ..base import OperationHandler
@@ -29,22 +29,17 @@ def _summarize(text: str, params: Dict[str, Any]) -> str:
     temperature = params.get("temperature")
     if temperature is not None:
         try:
-            temperature_value: Optional[float] = float(temperature)
+            float(temperature)
         except (TypeError, ValueError):
             raise ValueError("summarize temperature must be a number")
-    else:
-        temperature_value = 0.7
-    prompt = f"{instructions}\n\nText:\n{text}" if instructions else text
-    try:
-        response = providers.current.chat(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=temperature_value,
-        )
-    except TypeError:
-        # Older providers may not accept temperature keyword; retry without it.
-        response = providers.current.chat(prompt, max_tokens=max_tokens)  # type: ignore[call-arg]
-    return response.strip() if isinstance(response, str) else ""
+    response = providers.summarize(
+        text,
+        instructions=instructions,
+        max_tokens=max_tokens,
+    )
+    if not isinstance(response, str):
+        return ""
+    return response.strip()
 
 
 def _coerce_int(value: Any, *, default: int, minimum: int = 1) -> int:

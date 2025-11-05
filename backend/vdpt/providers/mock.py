@@ -29,6 +29,20 @@ def chat(
     return " ".join(parts)
 
 
+def summarize(
+    text: str,
+    instructions: str = "",
+    max_tokens: int = 128,
+    *,
+    model: Optional[str] = None,
+) -> str:
+    base = text.strip()
+    if instructions:
+        base = f"{instructions.strip()}::{base}"
+    payload = f"{base}:{max_tokens}:{model or TEXT_MODEL}"
+    return f"[mock-summarize] {_digest(payload)}"
+
+
 def caption(
     image_path: str,
     *,
@@ -37,8 +51,13 @@ def caption(
     model: Optional[str] = None,
 ) -> str:
     name = Path(image_path).name
-    prompt_digest = _digest(prompt)
+    prompt_digest = _digest(f"{prompt}:{model or VISION_MODEL}:{max_tokens}")
     return f"[mock-caption] {name}:{prompt_digest}"
 
 
-__all__ = ["TEXT_MODEL", "VISION_MODEL", "chat", "caption"]
+def img_caption(image_path: str, instructions: str = "", max_tokens: int = 80) -> str:
+    prompt = instructions or "请用一句中文描述图片内容"
+    return caption(image_path, prompt=prompt, max_tokens=max_tokens)
+
+
+__all__ = ["TEXT_MODEL", "VISION_MODEL", "chat", "caption", "summarize", "img_caption"]
