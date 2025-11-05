@@ -1,9 +1,17 @@
+import importlib
 import json
+import os
 from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
 from PIL import Image
+
+os.environ.setdefault("VDPT_PROVIDER", "mock")
+
+from backend.vdpt import providers
+
+importlib.reload(providers)
 
 from backend.app.main import Plan, Operation, execute, preview
 from backend.vdpt.providers import mock as mock_provider
